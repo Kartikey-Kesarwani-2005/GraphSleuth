@@ -5,11 +5,14 @@ calls against a real FalkorDB graph. Set `GROQ_API_KEY` in `.env` and the same c
 by the live model (`LLM: LIVE (groq:openai/gpt-oss-120b)`) — nothing else changes. Segments 5–8
 are 20–45s deep-dives.
 
-> **Free tier tip.** Groq's free tier caps tokens/minute *and* tokens/day, and an agent loop is
-> token-hungry. The transport retries `429`/`5xx` itself (honouring the API's *"try again in Xs"*),
-> so a per-minute limit just slows a run down. A **daily** cap pauses live runs until it resets —
-> in that case demo with `--offline` (the whole walkthrough still works) or wait it out. The default
-> model `openai/gpt-oss-120b` uses little reasoning budget (`LLM_REASONING_EFFORT=low`).
+> **Free tier tip.** Groq's free tier caps tokens/minute *and* tokens/day per model, and an agent
+> loop is token-hungry. The transport retries `429`/`5xx` itself (honouring the API's *"try again in
+> Xs"*), so a per-minute limit just slows a run down. A **daily** cap is not a burst — the brain
+> switches to the next model in `LLM_MODELS` and carries on (`[llm] … switching to …`); a real
+> capture is in [`MODEL_FALLBACK.md`](MODEL_FALLBACK.md). Only if the whole chain is spent do you
+> need `--offline` (the whole walkthrough still works) or to wait it out. Pin one model for a task
+> with `--model`. The default `openai/gpt-oss-120b` uses little reasoning budget
+> (`LLM_REASONING_EFFORT=low`).
 
 ## 0. Setup (once, ~1 minute)
 

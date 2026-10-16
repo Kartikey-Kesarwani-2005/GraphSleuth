@@ -57,9 +57,27 @@ class Config:
         return self.groq_model if self.groq_api_key else self.openai_model
 
     @property
+    def llm_models(self) -> list[str]:
+        """Fallback chain of live models, primary first.
+
+        Free tiers cap tokens **per model** per day, so when the current model
+        runs dry the live brain walks this list instead of giving up. The
+        configured primary (``GROQ_MODEL``/``OPENAI_MODEL``) is always tried
+        first; ``LLM_MODELS`` (comma-separated) fills in the rest.
+        """
+        ordered: list[str] = []
+        if self.llm_model:
+            ordered.append(self.llm_model)
+        for name in _env("LLM_MODELS").split(","):
+            name = name.strip()
+            if name and name not in ordered:
+                ordered.append(name)
+        return ordered or ["openai/gpt-oss-120b"]
+
+    @property
     def llm_provider(self) -> str:
         if self.groq_api_key:
-            return f"groq:{self.groq_model}"
+            return f"groq:{self.llm_model}"
         if self.openai_api_key:
             return f"openai-compatible:{self.openai_model}"
         return "none"

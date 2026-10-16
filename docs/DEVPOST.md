@@ -57,7 +57,7 @@ typed relationships, never flat rows.
 relationships; demo 11/11 tool calls ok; ring score 41.05 with 6 members; 6-hop money path from
 `ACC-EXT-01` to the collector `ACC-9100`; pipeline handoff created → accepted and case opened;
 20-thread concurrency bench 2307 ops in 4 s (575 ops/s, reads p95 71 ms, writes p95 82 ms, 0
-errors); MCP client sees all 20 tools; 12/12 offline tests pass.
+errors); MCP client sees all 20 tools; 15/15 offline tests pass.
 
 **Honest engineering notes:** FalkorDB's `ORDER BY` needed the `WITH … ORDER BY … LIMIT … RETURN`
 pattern in memory queries (found by running it live); native `algo.pageRank` returns 0 rows on the

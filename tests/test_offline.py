@@ -225,6 +225,82 @@ def test_spec_descriptions_mention_usage() -> None:
     assert "memory" in descriptions["recall"].lower()
 
 
+def test_llm_model_chain_primary_first() -> None:
+    import os
+
+    from graphsleuth.config import config
+
+    saved_model, saved_env = config.groq_model, os.environ.get("LLM_MODELS")
+    config.groq_model = "primary-model"
+    os.environ["LLM_MODELS"] = "primary-model, second ,third,second"  # dupes + spaces
+    try:
+        assert config.llm_models == ["primary-model", "second", "third"]
+    finally:
+        config.groq_model = saved_model
+        if saved_env is None:
+            os.environ.pop("LLM_MODELS", None)
+        else:
+            os.environ["LLM_MODELS"] = saved_env
+
+
+def test_daily_cap_detection() -> None:
+    from graphsleuth.llm import _is_daily_cap
+
+    class R:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    assert _is_daily_cap(R("Rate limit reached on tokens per day (TPD): Limit 200000"))
+    assert not _is_daily_cap(R("Please try again in 5.9025s"))  # burst limit, not daily
+
+
+def test_livebrain_walks_fallback_on_daily_cap() -> None:
+    """A model that hits its per-day cap must not stop the run — the next model does it."""
+    import os
+
+    from graphsleuth import llm as llm_module
+    from graphsleuth.config import config
+
+    class FakeResponse:
+        def __init__(self, status: int, text: str = "", body: dict | None = None) -> None:
+            self.status_code = status
+            self.text = text
+            self.headers: dict = {}
+            self._body = body or {}
+
+        def json(self) -> dict:
+            return self._body
+
+    seen: list[str] = []
+
+    def fake_post(url, json=None, headers=None, timeout=None):  # noqa: A002
+        model = json["model"]
+        seen.append(model)
+        if model == "exhausted-model":
+            return FakeResponse(429, "Rate limit reached on tokens per day (TPD): Limit 200000")
+        return FakeResponse(200, body={"choices": [{"message": {"content": "ok", "tool_calls": []}}]})
+
+    saved = (config.groq_api_key, config.llm_mode, config.groq_model, os.environ.get("LLM_MODELS"))
+    config.groq_api_key, config.llm_mode, config.groq_model = "test-key", "live", "exhausted-model"
+    os.environ["LLM_MODELS"] = "exhausted-model,fallback-model"
+    original_post = llm_module.requests.post
+    llm_module.requests.post = fake_post
+    try:
+        brain = llm_module.LiveBrain()
+        assert brain._chain == ["exhausted-model", "fallback-model"]
+        reply = brain.chat([{"role": "user", "content": "hi"}], [])
+        assert reply.content == "ok"
+        assert brain.model == "fallback-model"  # advanced
+        assert seen[:2] == ["exhausted-model", "fallback-model"]
+    finally:
+        llm_module.requests.post = original_post
+        config.groq_api_key, config.llm_mode, config.groq_model, saved_env = saved[0], saved[1], saved[2], saved[3]
+        if saved_env is None:
+            os.environ.pop("LLM_MODELS", None)
+        else:
+            os.environ["LLM_MODELS"] = saved_env
+
+
 if __name__ == "__main__":
     failures = 0
     for name, function in sorted(globals().items()):

@@ -39,21 +39,46 @@ class LiveBrain:
     that speaks `/chat/completions`. The endpoint comes from `config.llm_*`
     (GROQ_API_KEY wins, then OPENAI_API_KEY).
 
-    Free tiers rate-limit aggressively (Groq: 8k tokens/minute on some models),
-    and an agent loop burns tokens fast, so the transport retries 429/5xx with
-    the delay the API asks for instead of failing the investigation.
+    Free tiers rate-limit aggressively (Groq: 8k tokens/minute *and* a
+    per-model tokens/day cap), and an agent loop burns tokens fast, so the
+    transport retries 429/5xx with the delay the API asks for — and when a
+    model hits its **daily** cap it walks the fallback chain
+    (`config.llm_models`) to the next model rather than stalling the run.
     """
 
     MAX_RETRIES = 6
 
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
         if not config.has_llm_key:
             raise RuntimeError(
                 "No LLM key configured. Set GROQ_API_KEY (free: https://console.groq.com) "
                 "or OPENAI_API_KEY in .env, or run with LLM_MODE=demo for the offline brain."
             )
-        self.model = config.llm_model
-        self.provider = config.llm_provider
+        # An explicit `model` (e.g. --model) pins the brain to one model with no
+        # fallback; otherwise the configured primary leads the fallback chain.
+        self._chain: list[str] = [model] if model else list(config.llm_models)
+        self._index = 0
+        self._prefix = (
+            "groq"
+            if config.groq_api_key
+            else ("openai-compatible" if config.openai_api_key else "none")
+        )
+        self.model = self._chain[0]
+        self.provider = f"{self._prefix}:{self.model}"
+
+    def _advance(self) -> bool:
+        """Switch to the next model in the fallback chain. False when exhausted."""
+        previous = self.model
+        self._index += 1
+        if self._index >= len(self._chain):
+            return False
+        self.model = self._chain[self._index]
+        self.provider = f"{self._prefix}:{self.model}"
+        print(
+            f"  [llm] '{previous}' hit its daily cap/unavailable -> switching to '{self.model}'",
+            flush=True,
+        )
+        return True
 
     def _payload(self, messages: list[dict], tools: list[dict]) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -90,9 +115,12 @@ class LiveBrain:
                 }
             ]
             tools = []
-        payload = self._payload(messages, tools)
         response = None
-        for attempt in range(1, self.MAX_RETRIES + 1):
+        attempt = 0
+        while attempt < self.MAX_RETRIES:
+            attempt += 1
+            # Rebuilt each attempt: an earlier one may have switched model.
+            payload = self._payload(messages, tools)
             try:
                 response = requests.post(
                     f"{config.llm_base_url}/chat/completions",
@@ -109,15 +137,25 @@ class LiveBrain:
                 time.sleep(min(2 ** attempt, 30))
                 continue
 
-            if response.status_code == 429 and _is_daily_cap(response):
-                # A per-day cap (TPD) is not a burst limit: the API asks us to
-                # wait many minutes/hours, so retrying would just hang the run.
-                # Fail fast and point at the offline brain instead.
+            # Daily cap (TPD) or a dropped model (404): walk the fallback chain
+            # to the next model instead of stalling. Free tiers cap tokens
+            # *per model*, so the next model usually has its own fresh budget.
+            if response.status_code == 404 or (
+                response.status_code == 429 and _is_daily_cap(response)
+            ):
+                if self._advance():
+                    attempt = 0  # fresh retry budget for the new model
+                    continue
+                reason = (
+                    "daily token cap"
+                    if (response.status_code == 429 and _is_daily_cap(response))
+                    else "model unavailable (404)"
+                )
                 raise RuntimeError(
-                    "Groq daily token limit reached (per-day cap, not a burst limit) — "
-                    "retrying will not help until it resets.\n"
+                    f"No usable model left — {reason} on every model tried: "
+                    f"{', '.join(self._chain)}.\n"
                     "  * Run the demo with --offline for the full graph investigation now, or\n"
-                    "  * wait for the daily limit to reset, then re-run without --offline.\n"
+                    "  * wait for the daily limit to reset, or add a model to LLM_MODELS in .env.\n"
                     f"  API said: {(response.text or '')[:160]}"
                 ) from None
             if response.status_code in (429, 500, 502, 503, 504):
@@ -240,10 +278,13 @@ def _retry_delay(response: Any, attempt: int) -> float:
     return min(2.0 * attempt, 30.0)
 
 
-def get_brain(scripted: ScriptedBrain | None = None):
-    """Pick the brain: live model when a key is configured, else the scripted one."""
+def get_brain(scripted: ScriptedBrain | None = None, model: str | None = None):
+    """Pick the brain: live model when a key is configured, else the scripted one.
+
+    `model` pins the live brain to one specific model (no fallback chain).
+    """
     if config.use_live_llm():
-        return LiveBrain()
+        return LiveBrain(model=model)
     if scripted is None:
         raise RuntimeError(
             "Offline fallback needs a scripted brain, but none was provided. "

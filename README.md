@@ -172,9 +172,40 @@ Every command — `demo`, `pipeline`, `chat` — now drives the real model (defa
 `openai/gpt-oss-120b`, Groq's current tool-calling model; override with `GROQ_MODEL`). To use any
 other OpenAI-compatible endpoint instead, set `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`.
 
-> **Free-tier tip.** Groq's free tier caps tokens/minute, and an agent loop is token-hungry. The
-> transport retries `429`/`5xx` itself, honouring the API's *"try again in Xs"* hint, so a limit
-> slows the run down instead of failing it — no configuration needed. `LLM_REASONING_EFFORT=low`
+#### Automatic model fallback (never run out of tokens mid-investigation)
+
+Free tiers cap tokens **per model, per day**, and an agent loop is token-hungry — so a single busy
+run can exhaust one model's daily budget. Instead of dying, the live brain walks a **fallback
+chain**: when the current model hits its per-day cap (or is retired), it switches to the next model
+and continues the same investigation. Configure the chain in `.env` (comma-separated, primary
+first):
+
+```ini
+GROQ_MODEL=openai/gpt-oss-120b
+LLM_MODELS=openai/gpt-oss-120b,openai/gpt-oss-20b,qwen/qwen3.8-27b
+```
+
+```
+$ python -m graphsleuth demo --target ACC-9003
+  [llm] 'openai/gpt-oss-120b' hit its daily cap/unavailable -> switching to 'openai/gpt-oss-20b'
+  [1] recall(...) ...
+```
+
+To **pin** the brain to one model for a task (no fallback), pass `--model`:
+
+```powershell
+python -m graphsleuth demo --target ACC-9003 --model qwen/qwen3.8-27b   # a specific model
+python -m graphsleuth pipeline --model openai/gpt-oss-20b                # cheaper/faster for triage
+```
+
+A real live run where `120b` ran dry mid-investigation and `20b` finished it is committed at
+[`demos/MODEL_FALLBACK.md`](demos/MODEL_FALLBACK.md).
+
+> **Free-tier tip.** Groq's free tier caps tokens/minute *and* tokens/day per model, and an agent
+> loop is token-hungry. The transport retries `429`/`5xx` itself, honouring the API's *"try again in
+> Xs"* hint, so a burst limit merely slows the run. A **daily** cap is not a burst — retrying would
+> hang for hours — so the brain immediately moves to the next model in `LLM_MODELS` (and only gives
+> up, with a clear `--offline` hint, once the whole chain is spent). `LLM_REASONING_EFFORT=low`
 > (default) keeps reasoning-token spend down.
 
 ---
@@ -371,7 +402,7 @@ Selected output (copied from the report):
   own conclusion — proof that state lives in the graph, not the process.
 * **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 20 tools and
   gets live graph data back (`tools: 20`; live `entity_search` + `detect_suspicious_cluster` calls).
-* **Tests:** `tests/test_offline.py` → 12/12 pass (no database required); `compileall` clean.
+* **Tests:** `tests/test_offline.py` → 15/15 pass (no database required); `compileall` clean.
 
 > Run ids (`AL-…`, `NOTE-…`, `MEM-…`, `HANDOFF-…`) are generated per run, so they differ between
 > runs; the committed report files are the source of truth for any specific id.

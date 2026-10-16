@@ -175,6 +175,7 @@ def run_pipeline(
     triage_brain: Any = None,
     investigator_brain: Any = None,
     offline: bool = False,
+    model: str | None = None,
 ) -> dict:
     """Run Triage -> handoff -> Investigator for one target and return both transcripts."""
     if offline:
@@ -189,6 +190,7 @@ def run_pipeline(
         max_rounds=8,  # 7 scripted steps + the final answer round
         brain=triage_brain,
         scripted=build_triage_brain(target),
+        model=model,
     )
     triage_result = triage.ask(HANDOFF_QUESTION.format(target=target))
 
@@ -199,6 +201,7 @@ def run_pipeline(
         brain=investigator_brain,
         scripted=build_demo_brain(target, handoff=True),
         max_rounds=16,  # handoff pickup + the full investigation
+        model=model,
     )
     investigation_result = investigator.ask(INVESTIGATE_QUESTION.format(target=target))
 

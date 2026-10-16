@@ -37,7 +37,10 @@ def cmd_status(_args: argparse.Namespace) -> int:
         print(f"  other graphs: {', '.join(others)}")
     print(f"  nodes: {info['nodes']}   relationships: {info['relationships']}")
     if config.use_live_llm():
+        chain = config.llm_models
         print(f"  LLM: LIVE ({config.llm_provider})")
+        if len(chain) > 1:
+            print(f"  fallback chain: {' -> '.join(chain)}")
     else:
         print("  LLM: offline fallback (scripted brain) — set GROQ_API_KEY for the real model")
     return 0
@@ -60,6 +63,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
         tenant=args.tenant,
         brain=build_demo_brain(args.target) if args.offline else None,
         scripted=build_demo_brain(args.target),
+        model=args.model,
     )
     result = agent.ask(question)
     print("\n" + result["answer"])
@@ -75,7 +79,13 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
 def cmd_pipeline(args: argparse.Namespace) -> int:
     print(f"Pipeline: triage -> handoff -> investigator | target={args.target} tenant={args.tenant}\n")
-    result = run_pipeline(args.target, tenant=args.tenant, verbose=not args.quiet, offline=args.offline)
+    result = run_pipeline(
+        args.target,
+        tenant=args.tenant,
+        verbose=not args.quiet,
+        offline=args.offline,
+        model=args.model,
+    )
     print("\n" + "=" * 78)
     print("TRIAGE")
     print("=" * 78)
@@ -112,7 +122,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
 
 
 def cmd_chat(args: argparse.Namespace) -> int:
-    agent = GraphSleuth(tenant=args.tenant, session_id=args.session)
+    agent = GraphSleuth(tenant=args.tenant, session_id=args.session, model=args.model)
     print(f"GraphSleuth ready. session={agent.session_id} tenant={agent.tenant}")
     print("Type a question, /evidence for the last trail, /new for a fresh session, /exit to quit.\n")
     last: dict | None = None
@@ -155,6 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_demo.add_argument("--tenant", default=memory.DEFAULT_TENANT)
     p_demo.add_argument("--save", default="", help="write a markdown report to this path")
     p_demo.add_argument("--offline", action="store_true", help="force the scripted fallback brain")
+    p_demo.add_argument("--model", default=None, help="pin the live brain to one model (skip the fallback chain)")
     p_demo.set_defaults(func=cmd_demo)
 
     p_pipe = sub.add_parser("pipeline", help="two agents: triage -> handoff -> investigator")
@@ -163,6 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_pipe.add_argument("--save", default="", help="write the combined markdown report here")
     p_pipe.add_argument("--quiet", action="store_true", help="hide per-tool-call logs")
     p_pipe.add_argument("--offline", action="store_true", help="force the scripted fallback brains")
+    p_pipe.add_argument("--model", default=None, help="pin the live brain to one model (skip the fallback chain)")
     p_pipe.set_defaults(func=cmd_pipeline)
 
     p_bench = sub.add_parser("bench", help="high-concurrency read/write benchmark")
@@ -176,6 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_chat = sub.add_parser("chat", help="interactive investigation session")
     p_chat.add_argument("--tenant", default=memory.DEFAULT_TENANT)
     p_chat.add_argument("--session", default=None, help="reuse an existing session id")
+    p_chat.add_argument("--model", default=None, help="pin the live brain to one model (skip the fallback chain)")
     p_chat.set_defaults(func=cmd_chat)
 
     return parser

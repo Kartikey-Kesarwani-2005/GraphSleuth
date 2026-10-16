@@ -90,7 +90,7 @@ Full walkthrough: `demos/DEMO_SCRIPT.md`.
 ## Verification (measured on this machine)
 
 ```powershell
-.\.venv\Scripts\python.exe tests/test_offline.py        # 12/12 pass, no database needed
+.\.venv\Scripts\python.exe tests/test_offline.py        # 15/15 pass, no database needed
 .\.venv\Scripts\python.exe -m graphsleuth status        # connectivity + graph + LLM check
 ```
 
@@ -106,7 +106,8 @@ Full walkthrough: `demos/DEMO_SCRIPT.md`.
 | Multigraph isolation | canary note: tenant `acme` = 1, tenant `default` = 0; `drop_tenant('acme')` removes the graph |
 | Concurrency bench (20 threads, 4 s) | 2307 ops, 575 ops/s; reads p50 20.6 ms / p95 71.1 ms; writes p50 45.4 ms / p95 82.3 ms; **0 errors** |
 | MCP server (stdio) | real client: `initialize` OK, **20 tools**, live `entity_search` + `detect_suspicious_cluster` calls |
-| Tests / compile | 12/12 offline tests pass, `compileall` clean |
+| Model fallback | `gpt-oss-120b` hit its daily cap mid-run → brain auto-switched to `gpt-oss-20b` and finished the investigation; real capture in `demos/MODEL_FALLBACK.md` |
+| Tests / compile | 15/15 offline tests pass, `compileall` clean |
 
 ## Limits / honest notes
 

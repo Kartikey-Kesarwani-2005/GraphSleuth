@@ -81,6 +81,7 @@ class GraphSleuth:
         prompt: str | None = None,
         max_rounds: int | None = None,
         scripted: Any = None,
+        model: str | None = None,
     ) -> None:
         self.tenant = tenant
         self.session_id = session_id or memory.new_session_id()
@@ -91,13 +92,14 @@ class GraphSleuth:
         self.max_rounds = int(max_rounds or config.max_tool_rounds)
         self._brain_override = brain
         self._scripted = scripted
+        self._model = model
 
     # -- internals ---------------------------------------------------------- #
     def _brain(self):
         if self._brain_override is not None:
             return self._brain_override
         if config.use_live_llm():
-            return get_brain()
+            return get_brain(model=self._model)
         return get_brain(scripted=self._scripted or build_demo_brain())
 
     def _log(self, message: str) -> None:

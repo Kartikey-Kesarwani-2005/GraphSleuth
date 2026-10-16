@@ -142,7 +142,7 @@ Everything above was produced against a live `falkordb/falkordb` container:
 
 * seed **1,702 nodes / 2,713 relationships** in `graphsleuth:default`;
 * demo: **11/11 tool calls `[ok]`**, cluster score 41.05, 6 hops proved, `CASE-0002` opened;
-* tests: **12/12** offline tests pass (`tests/test_offline.py`), `compileall` clean;
+* tests: **15/15** offline tests pass (`tests/test_offline.py`), `compileall` clean;
 * concurrency: 20 threads for 4 seconds → **2,307 ops (575.3 ops/s), 0 errors**
   (reads 1,956 @ 487.8/s, p50 20.55 ms; writes 351 @ 87.5/s, p50 45.43 ms).
 
@@ -156,6 +156,7 @@ Everything above was produced against a live `falkordb/falkordb` container:
 #    GROQ_API_KEY=gsk_...
 .\.venv\Scripts\python.exe -m graphsleuth status
 #   LLM: LIVE (groq:openai/gpt-oss-120b)
+#   fallback chain: openai/gpt-oss-120b -> openai/gpt-oss-20b -> qwen/qwen3.8-27b
 
 # 3. two agents sharing state through the graph
 .\.venv\Scripts\python.exe -m graphsleuth pipeline --target ACC-9003 --save demos/PIPELINE_REPORT.md
