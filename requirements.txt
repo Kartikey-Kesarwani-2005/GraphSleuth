@@ -1,0 +1,4 @@
+falkordb
+requests
+python-dotenv
+mcp

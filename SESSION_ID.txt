@@ -1,0 +1,42 @@
+===============================================
+ GraphSleuth — SESSION ID (save this!)
+===============================================
+
+Session ID:
+  ses_ebb70c674ffeHpySi3z4XPV7Id
+
+Wapas session kholne ke liye (VS Code ya terminal):
+
+  cd D:\Hackathon\GraphSleuth
+  opencode --session ses_ebb70c674ffeHpySi3z4XPV7Id
+
+
+===============================================
+ Project status (last updated: 2026-10-16)
+===============================================
+
+ Location:   D:\Hackathon\GraphSleuth   (sab kuch isi folder me)
+ Done:
+   - Poora agent code (graphsleuth/ — 11 files)
+   - 12 graph tools (8 read + 4 action) + MCP server
+   - Memory (episodic/semantic/procedural, tenant-scoped)
+   - Evidence trail + Mermaid path report
+   - CLI: status / seed / demo / chat
+   - venv recreated on D:, 9/9 offline tests pass
+   - README, docs/SUBMISSION.md, demos/DEMO_SCRIPT.md
+
+ Pending:
+   - Windows reboot (Docker Desktop ne WSL2/Hyper-V features
+     enable kiye hain, RebootPending: True)
+
+ After reboot, ek command:
+
+   powershell -ExecutionPolicy Bypass -File .\setup.ps1
+
+ (ye Docker start -> FalkorDB up -> seed -> demo -> report
+  sab kar dega)
+
+ Ya bas bolo "reboot ho gaya" — main khud sab chala dunga.
+
+ Fallback: agar Docker WSL 2 maange to Hyper-V backend pe
+ switch kar denge (Windows 11 Pro, doosri reboot nahi lagegi).

@@ -1,0 +1,10 @@
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: graphsleuth-falkordb
+    ports:
+      - "6379:6379"
+    volumes:
+      # graph data lives inside the project folder: ./data/falkordb
+      - ./data/falkordb:/data
+    restart: unless-stopped
