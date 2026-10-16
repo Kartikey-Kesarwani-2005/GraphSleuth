@@ -85,8 +85,10 @@ sessions concluded, the playbook it follows — is nodes and edges in one Falkor
 (MemoryNote {kind: episodic|semantic|procedural})-[:ABOUT]─▶(any entity)
 ```
 
-Seeded dataset: ~215 accounts, 17 people, ~200 devices, 10 merchants, ~1,200 transactions,
-3 alerts, 1 open case and a starter memory note — plus the mule ring the demo discovers.
+Seeded dataset (verified live — `python -m graphsleuth seed` reports **1702 nodes / 2713
+relationships**): 207 accounts, 207 people, 58 devices, 10 merchants, 1213 transactions, 3 alerts,
+1 open case and 3 memory notes (one semantic, one episodic, one procedural) — plus the mule ring
+the demo discovers (`ACC-9001…ACC-9005` funnelling into collector `ACC-9100`).
 
 ---
 
@@ -111,6 +113,10 @@ copy .env.example .env
 # 5. Run the investigation
 .\.venv\Scripts\python.exe -m graphsleuth demo --target ACC-9003 --save demos/out/report.md
 ```
+
+A sample report from a real run is committed at [`demos/EXAMPLE_REPORT.md`](demos/EXAMPLE_REPORT.md)
+— and if the FalkorDB container ever stops, `docker compose up -d` brings it straight back with the
+graph intact (the data is bind-mounted to `./data/falkordb`).
 
 `setup.ps1` does everything end to end: it creates the venv if missing, installs the dependencies,
 launches Docker Desktop if the engine is down (waiting for it to come up), brings FalkorDB up, seeds
@@ -174,11 +180,60 @@ the flagged account — visible in the `recall` step of the evidence trail. Memo
 
 ---
 
+## Verified live (this is a real run, not a mock)
+
+Everything here was produced against FalkorDB running in Docker while building the project. The
+full committed transcript is [`demos/EXAMPLE_REPORT.md`](demos/EXAMPLE_REPORT.md).
+
+```
+$ python -m graphsleuth status
+FalkorDB OK  ->  localhost:6379  (graph 'graphsleuth')
+  LLM: scripted demo brain
+
+$ python -m graphsleuth seed
+Seeded graph: 1702 nodes, 2713 relationships
+
+$ python -m graphsleuth demo --target ACC-9003 --save demos/EXAMPLE_REPORT.md
+  [1] recall(query=ACC-9003)                -> notes=[1], open_cases=[1]
+  [2] entity_search(query=ACC-9003)         -> matches=[1]
+  [3] graph_neighbors(entity_id=ACC-9003)   -> nodes=[14], edges=[27]
+  [4] trace_money_flow(account_id=ACC-9003) -> outgoing={levels:3, reached:3}, total_out=5530000.0
+  [5] find_shared_links(account_id=ACC-9003)-> linked_accounts=4
+  [6] detect_suspicious_cluster(min_signals=2)
+      -> clusters_found=1, clusters_filtered_out=4
+  [7] shortest_connection(ACC-EXT-01 -> ACC-9100, via=[ORIGINATED, DESTINED])
+      -> connected=True, hops=6
+  [8-11] open_case, add_case_note, flag_account, remember
+```
+
+Selected output (copied from the report):
+
+> **Verdict** — ACC-9003 is a confirmed hop in a 6-account mule ring that pools same-day transfers
+> into beneficiary account ACC-9100. Escalated.
+
+* **Cluster:** the 5 mule accounts `ACC-9001…ACC-9005` are linked by shared devices `DEV-9001` /
+  `DEV-9002`; `ACC-9100` is attached as the **collector** because it receives from three of them.
+  4 innocent device-share clusters were filtered out as noise.
+* **Money path** (money-only, no case/alert detours):
+  `ACC-EXT-01 -[ORIGINATED]-> TX-9000 -[DESTINED]-> ACC-9001 -[ORIGINATED]-> TX-9001 -[DESTINED]-> ACC-9002 -[ORIGINATED]-> TX-9008 -[DESTINED]-> ACC-9100`
+* **Actions on the graph:** opened `CASE-0002` involving the 8 unique entities, added a note,
+  flagged `ACC-9003` (`under_review`) and wrote an episodic memory note.
+* **Cross-session memory:** running `demo` a second time, step 1's `recall` returns the first run's
+  own conclusion — proof that state lives in the graph, not the process.
+* **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees the same 12
+  tools and gets live graph data back.
+* **Tests:** `tests/test_offline.py` → 9/9 pass (no database required).
+
+A demo run adds case/alert/note/memory nodes, so the graph grows from the seeded 1702 nodes /
+2713 relationships to ~1709 / ~2732 — visible with `python -m graphsleuth status`.
+
+---
+
 ## Track coverage
 
 | Track | How GraphSleuth hits it |
 |---|---|
-| **01 — Act on connected data** | Multi-hop reasoning over accounts/devices/transactions; graph algorithms (union-find clustering, BFS pathfinding) as tools; Cypher as a read-only tool; actions (alert, case) driven by graph evidence; full evidence trail + Mermaid path |
+| **01 — Act on connected data** | Multi-hop reasoning over accounts/devices/transactions; graph algorithms as tools (union-find clustering over shared-device links with beneficiary-collector corroboration, plus BFS pathfinding with an optional relationship filter); Cypher as a read-only tool; actions (alert, case) driven by graph evidence; full evidence trail + Mermaid path |
 | **02 — Memory & coordination** | Episodic (`Session`/`Message`), semantic and procedural (`MemoryNote`) memory persisted in the graph; memory briefing before every question; cases/alerts/notes are shared state any agent (or MCP client) can pick up; per-tenant isolation |
 | **03 — Company brain** | The same pattern applied to an org: people, accounts, records, decisions and cases in one graph, with every answer traceable to its source entities and prior notes |
 
@@ -224,3 +279,12 @@ this one folder. The only machine-wide pieces are Docker Desktop itself and the 
   auditable actions.
 * **Explainability is a first-class output**: each report contains the verdict, the numbered
   evidence chain, the graph path, the tools used and the actions taken.
+* **Strong links cluster, weak links corroborate.** Shared devices (rare, and hard to fake) drive
+  the union-find pass; shared beneficiaries are far too common among ordinary transfers to link
+  accounts on their own, so they only *attach* a collector to a cluster. The same discipline applies
+  to `shortest_connection` — `via=["ORIGINATED","DESTINED"]` follows money only instead of letting
+  the path cut through an unrelated case node.
+* **FalkorDB-specific Cypher quirks are handled:** its `ORDER BY` can only reference variables that
+  are projected or grouped in that scope, so every sorting query goes through
+  `WITH … ORDER BY … LIMIT … RETURN`. The seed and all read tools were run against a live
+  `falkordb/falkordb` container, not a mock.

@@ -70,13 +70,13 @@ def to_json(value: Any) -> Any:
     return str(value)
 
 
-def query(cypher: str, params: dict[str, Any] | None = None, g=None) -> list[Any]:
+def query(cypher: str, params: dict[str, Any] | None = None) -> list[Any]:
     """Run a Cypher query and return a list of JSON-safe `row` values.
 
     Queries should `RETURN <expr> AS row`. If the result has several columns we
     return positional dicts, which keeps ad-hoc Cypher usable from the agent.
     """
-    result = (g or graph()).query(cypher, params or {})
+    result = graph().query(cypher, params or {})
     raw_rows = list(getattr(result, "result_set", []) or [])
     headers = _header_names(result)
 

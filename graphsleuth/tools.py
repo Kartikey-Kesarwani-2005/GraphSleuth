@@ -281,8 +281,14 @@ def find_shared_links(account_id: str) -> dict:
 
 
 def detect_suspicious_cluster(min_signals: int = 2, top: int = 5) -> dict:
-    """Cluster the graph into suspect groups using shared-device and shared-beneficiary
-    links plus prior alerts (a union-find community pass over the graph)."""
+    """Cluster the graph into suspect groups, with the evidence behind each member.
+
+    A shared **device** is the strong link: two accounts seen on the same device
+    is rare and hard to fake, so clusters are grown from those links (union-find).
+    A shared **beneficiary** is deliberately NOT a link on its own — random
+    transfers produce countless shared destinations — it only corroborates a
+    cluster: a destination that collects from 2+ members is attached to the
+    cluster as a collector account."""
     min_signals = max(1, int(min_signals))
 
     device_pairs = db.query(
@@ -331,36 +337,60 @@ def detect_suspicious_cluster(min_signals: int = 2, top: int = 5) -> dict:
         else:
             entry[key].add(value)
 
+    # Strong link: seen on the same device. Only these links merge accounts into a
+    # cluster, because device identity is rare and hard to fake.
     for a, b, device in device_pairs:
         union(a, b)
         bump(a, "devices", device)
         bump(b, "devices", device)
+
+    # Shared beneficiaries are recorded per account but deliberately do NOT merge
+    # clusters on their own (random transfers share destinations all the time).
+    # They corroborate a cluster: see "collectors" below.
     for x, y, beneficiary in beneficiary_pairs:
-        union(x, y)
         bump(x, "beneficiaries", beneficiary)
         bump(y, "beneficiaries", beneficiary)
+
     for account, severity in alerts:
         bump(account, "alerts", severity)
 
+    # Only accounts carrying a strong signal (a shared device, or a prior alert)
+    # can seed a cluster.
     clusters: dict[str, list[str]] = {}
-    for account in list(signals):
-        clusters.setdefault(find(account), []).append(account)
+    for account, entry in signals.items():
+        if entry["devices"] or entry["alerts"]:
+            clusters.setdefault(find(account), []).append(account)
 
     results: list[dict] = []
+    filtered = 0
     for members in clusters.values():
+        member_set = set(members)
+
+        # A beneficiary that collects from 2+ members corroborates the cluster.
+        shared_ben: dict[str, int] = {}
+        for account in members:
+            for beneficiary in signals[account]["beneficiaries"]:
+                shared_ben[beneficiary] = shared_ben.get(beneficiary, 0) + 1
+        collectors = {
+            beneficiary: count
+            for beneficiary, count in shared_ben.items()
+            if count >= 2 and beneficiary not in member_set
+        }
+
         details = []
         total_score = 0.0
         for account in sorted(members):
             entry = signals[account]
+            mine = sorted(b for b in entry["beneficiaries"] if shared_ben.get(b, 0) >= 2)
             score = (
                 2.0 * len(entry["devices"])
-                + 2.0 * len(entry["beneficiaries"])
+                + 2.0 * len(mine)
                 + 1.0 * len(entry["alerts"])
                 + 1.0 * float(entry["risk"] or 0)
             )
             signal_count = (
                 (1 if entry["devices"] else 0)
-                + (1 if entry["beneficiaries"] else 0)
+                + (1 if mine else 0)
                 + (1 if entry["alerts"] else 0)
             )
             if signal_count < min_signals and len(members) < 3:
@@ -369,13 +399,33 @@ def detect_suspicious_cluster(min_signals: int = 2, top: int = 5) -> dict:
             details.append(
                 {
                     "account": account,
+                    "role": "linked_account",
                     "risk_score": round(float(entry["risk"] or 0), 2),
                     "shared_devices": sorted(entry["devices"]),
-                    "shared_beneficiaries": sorted(entry["beneficiaries"]),
+                    "shared_beneficiaries": mine,
                     "alerts": entry["alerts"],
                     "score": round(score, 2),
                 }
             )
+
+        # The collector(s) join the cluster: the money sink tying the members together.
+        for beneficiary, count in sorted(collectors.items(), key=lambda kv: -kv[1]):
+            score = 2.0 * count
+            total_score += score
+            details.append(
+                {
+                    "account": beneficiary,
+                    "role": "shared_beneficiary",
+                    "risk_score": round(float(risk.get(beneficiary, 0) or 0), 2),
+                    "shared_devices": [],
+                    "shared_beneficiaries": sorted(
+                        m for m in members if beneficiary in signals[m]["beneficiaries"]
+                    ),
+                    "alerts": (signals.get(beneficiary) or {}).get("alerts", []),
+                    "score": round(score, 2),
+                }
+            )
+
         if len(details) >= 2:
             details.sort(key=lambda item: item["score"], reverse=True)
             results.append(
@@ -385,19 +435,34 @@ def detect_suspicious_cluster(min_signals: int = 2, top: int = 5) -> dict:
                     "members": details,
                 }
             )
+        else:
+            filtered += 1
 
     results.sort(key=lambda item: item["cluster_score"], reverse=True)
     return {
-        "algorithm": "union-find clustering over shared-device + shared-beneficiary + alert signals",
+        "algorithm": "union-find over shared devices + beneficiary collectors + alerts",
         "min_signals": min_signals,
         "clusters_found": len(results),
+        "clusters_filtered_out": filtered,
         "clusters": results[: max(1, int(top))],
     }
 
 
-def shortest_connection(id_a: str, id_b: str, max_depth: int = 6) -> dict:
-    """Breadth-first search for the shortest chain of relationships between two entities."""
+def shortest_connection(id_a: str, id_b: str, max_depth: int = 6, via: Any = None) -> dict:
+    """Breadth-first search for the shortest chain of relationships between two entities.
+
+    `via` optionally restricts the walk to specific relationship types, e.g.
+    ``["ORIGINATED", "DESTINED"]`` to follow money only instead of letting the
+    path cut through unrelated nodes such as cases or alerts.
+    """
     max_depth = max(1, min(int(max_depth), 8))
+    if isinstance(via, str):
+        allowed = {part.strip().upper() for part in via.split(",") if part.strip()}
+    elif isinstance(via, (list, tuple)):
+        allowed = {str(part).strip().upper() for part in via if str(part).strip()}
+    else:
+        allowed = set()
+
     queue = [(id_a, None)]
     parents: dict[str, tuple[str | None, str | None]] = {id_a: (None, None)}
     found = False
@@ -410,6 +475,8 @@ def shortest_connection(id_a: str, id_b: str, max_depth: int = 6) -> dict:
                 {"id": current, "limit": MAX_ROWS},
             )
             for rel_type, neighbour in rows:
+                if allowed and str(rel_type).upper() not in allowed:
+                    continue
                 summary = _node_summary(neighbour)
                 neighbour_id = summary.get("id")
                 if not neighbour_id or neighbour_id in parents:
@@ -432,6 +499,7 @@ def shortest_connection(id_a: str, id_b: str, max_depth: int = 6) -> dict:
             "from": id_a,
             "to": id_b,
             "connected": False,
+            "via": sorted(allowed),
             "note": f"no chain found within {max_depth} hops",
         }
 
@@ -454,6 +522,7 @@ def shortest_connection(id_a: str, id_b: str, max_depth: int = 6) -> dict:
         "to": id_b,
         "connected": True,
         "hops": len(chain) - 1,
+        "via": sorted(allowed),
         "path": chain,
         "narrative": narrative,
     }
@@ -678,11 +747,18 @@ TOOL_SPECS: list[dict] = [
     _spec(
         "shortest_connection",
         "Breadth-first search for the shortest chain of relationships between two entities. "
-        "Use it to prove how two suspects are linked and to narrate the path.",
+        "Use it to prove how two suspects are linked and to narrate the path. "
+        "Pass `via` to follow only certain relationship types (e.g. a money-only chain).",
         {
             "id_a": {"type": "string"},
             "id_b": {"type": "string"},
             "max_depth": {"type": "integer", "description": "default 6"},
+            "via": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "optional relationship types to restrict the path, e.g. "
+                "['ORIGINATED','DESTINED'] for a money-only chain",
+            },
         },
         ["id_a", "id_b"],
     ),

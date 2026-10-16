@@ -77,5 +77,9 @@ Full walkthrough: `demos/DEMO_SCRIPT.md`.
   `LLM_MODE=auto` switches to a live model with no code changes.
 * Small-scale dataset by design (a few thousand nodes) — enough to prove the approach, not a
   production fraud engine.
-* Graph algorithms are implemented in Cypher + Python rather than relying on a specific FalkorDB
-  procedure, so the project runs on any FalkorDB build.
+* The clustering and pathfinding algorithms are implemented in Cypher + Python so the tool contract
+  stays portable and unit-testable without a database — FalkorDB's own `algo.*` procedures exist in
+  the version used (`falkordb/falkordb:latest`) but the tools do not depend on them. Storage,
+  traversal and indexing are FalkorDB all the way down.
+* Data is synthetic and deliberately small: it exists to make one ring *findable through
+  connections* while 200 ordinary accounts provide realistic noise.

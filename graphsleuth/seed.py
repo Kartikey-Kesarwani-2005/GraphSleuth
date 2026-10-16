@@ -244,6 +244,10 @@ def _ring_transactions() -> list[dict]:
         ("TX-9005", "ACC-9005", BENEFICIARY, 1730000.0),
         ("TX-9006", "ACC-9002", "ACC-9004", 260000.0),
         ("TX-9007", "ACC-9001", "ACC-9005", 140000.0),
+        # Side funnels: several mules push smaller amounts straight to the
+        # collector, so the beneficiary is shared by more than one member.
+        ("TX-9008", "ACC-9002", BENEFICIARY, 300000.0),
+        ("TX-9009", "ACC-9004", BENEFICIARY, 250000.0),
     ]
     transactions = []
     for index, (tx_id, src, dst, amount) in enumerate(chain):

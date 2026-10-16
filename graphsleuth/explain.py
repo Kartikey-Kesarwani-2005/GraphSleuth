@@ -35,7 +35,11 @@ def _digest(result: Any) -> str:
         if isinstance(value, list):
             parts.append(f"{key}: {len(value)} items")
         elif isinstance(value, dict):
-            parts.append(f"{key}: {{{', '.join(list(value)[:4])}}}")
+            inner = ", ".join(
+                f"{k}: {len(v) if isinstance(v, (list, tuple, dict)) else v}"
+                for k, v in list(value.items())[:4]
+            )
+            parts.append(f"{key}: {{{inner}}}")
         else:
             parts.append(f"{key}: {str(value)[:80]}")
     return " | ".join(parts)[:400]

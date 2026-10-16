@@ -103,9 +103,10 @@ def recall(query_text: str = "", kind: str = "", tenant: str = DEFAULT_TENANT, l
           AND ($kind = '' OR n.kind = $kind)
           AND ($q = '' OR toLower(n.text) CONTAINS toLower($q) OR n.id CONTAINS $q)
         OPTIONAL MATCH (n)-[:ABOUT]->(e)
-        RETURN [n.id, n.kind, n.text, n.created_at, collect(e.id)] AS row
+        WITH n, collect(e.id) AS about
         ORDER BY n.created_at DESC
         LIMIT $limit
+        RETURN [n.id, n.kind, n.text, n.created_at, about] AS row
         """,
         {"q": query_text, "kind": kind, "tenant": tenant, "limit": limit},
     )
@@ -120,9 +121,10 @@ def open_cases(tenant: str = DEFAULT_TENANT, limit: int = 5) -> list[dict]:
         """
         MATCH (c:Case)
         WHERE coalesce(c.status, 'open') = 'open'
-        RETURN [c.id, c.title, c.created_at, coalesce(c.summary, '')] AS row
+        WITH c
         ORDER BY c.created_at DESC
         LIMIT $limit
+        RETURN [c.id, c.title, c.created_at, coalesce(c.summary, '')] AS row
         """,
         {"limit": limit},
     )
@@ -134,9 +136,10 @@ def recent_sessions(tenant: str = DEFAULT_TENANT, limit: int = 3) -> list[dict]:
         """
         MATCH (s:Session)
         WHERE s.tenant = $tenant
-        RETURN [s.id, coalesce(s.summary, ''), s.started_at] AS row
+        WITH s
         ORDER BY s.started_at DESC
         LIMIT $limit
+        RETURN [s.id, coalesce(s.summary, ''), s.started_at] AS row
         """,
         {"tenant": tenant, "limit": limit},
     )

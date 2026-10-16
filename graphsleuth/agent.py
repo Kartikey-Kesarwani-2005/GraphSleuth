@@ -34,8 +34,8 @@ Working rules:
 3. Resolve ids with `entity_search`, then expand with `graph_neighbors` (depth 1-3).
 4. For suspicious-transaction questions: `trace_money_flow` (where did the money go?), then
    `find_shared_links` (who else is on this device / beneficiary?).
-5. To look past a single account use `detect_suspicious_cluster` (union-find clustering over
-   shared devices, shared beneficiaries and prior alerts).
+5. To look past a single account use `detect_suspicious_cluster` (union-find over shared
+   devices, corroborated by shared beneficiaries and prior alerts).
 6. Prove relationships with `shortest_connection` so the path can be shown.
 7. `run_cypher` is the read-only escape hatch when no other tool fits.
 8. Two or more of {shared device, shared beneficiary, prior alert} on the same account is a
@@ -181,7 +181,11 @@ def _compact(value: Any) -> str:
     if isinstance(value, (list, tuple)):
         return f"[{len(value)}]"
     if isinstance(value, dict):
-        return "{" + ",".join(list(value)[:3]) + "}"
+        inner = ", ".join(
+            f"{k}:{len(v) if isinstance(v, (list, tuple, dict)) else v}"
+            for k, v in list(value.items())[:3]
+        )
+        return "{" + inner + "}"
     text = str(value)
     return text if len(text) <= 40 else text[:37] + "…"
 
@@ -230,13 +234,23 @@ def build_demo_brain(target: str = "ACC-9003") -> ScriptedBrain:
         ("trace_money_flow", {"account_id": target, "depth": 4}),
         ("find_shared_links", {"account_id": target}),
         ("detect_suspicious_cluster", {"min_signals": 2}),
-        ("shortest_connection", {"id_a": "ACC-EXT-01", "id_b": "ACC-9100", "max_depth": 8}),
+        (
+            "shortest_connection",
+            {
+                "id_a": "ACC-EXT-01",
+                "id_b": "ACC-9100",
+                "max_depth": 8,
+                "via": ["ORIGINATED", "DESTINED"],
+            },
+        ),
         (
             "open_case",
             lambda history: {
                 "title": f"Mule ring around {target}",
                 "summary": ring_summary(history),
-                "entity_ids": cluster_members(history) + ["ACC-9100", "DEV-9001", "DEV-9002"],
+                "entity_ids": _dedupe_ids(
+                    cluster_members(history) + ["ACC-9100", "DEV-9001", "DEV-9002"]
+                ),
             },
         ),
         (
@@ -271,7 +285,7 @@ def build_demo_brain(target: str = "ACC-9003") -> ScriptedBrain:
                     "ACC-EXT-01 -> ACC-9001 -> ... -> ACC-9005 -> ACC-9100 through shared devices "
                     "DEV-9001/DEV-9002; account flagged and case opened."
                 ),
-                "about_ids": cluster_members(history) + ["ACC-9100"],
+                "about_ids": _dedupe_ids(cluster_members(history) + ["ACC-9100"]),
             },
         ),
     ]
@@ -283,6 +297,17 @@ def _last(history: list[dict], tool: str) -> dict | None:
         if entry["tool"] == tool and isinstance(entry["result"], dict):
             return entry["result"]
     return None
+
+
+def _dedupe_ids(ids: list[str]) -> list[str]:
+    """Order-preserving de-duplication for entity id lists."""
+    seen: set[str] = set()
+    unique: list[str] = []
+    for entity_id in ids:
+        if entity_id not in seen:
+            seen.add(entity_id)
+            unique.append(entity_id)
+    return unique
 
 
 def compose_final(question: str, history: list[dict]) -> str:
@@ -342,8 +367,10 @@ def compose_final(question: str, history: list[dict]) -> str:
     lines.append("")
     lines.append("**Members flagged by the clustering algorithm**")
     for member in members[:6]:
+        role = member.get("role")
+        label = f" ({role})" if role and role != "linked_account" else ""
         lines.append(
-            f"- {member['account']} | risk {member['risk_score']} | devices "
+            f"- {member['account']}{label} | risk {member['risk_score']} | devices "
             f"{member['shared_devices']} | beneficiaries {member['shared_beneficiaries']} | "
             f"alerts {member['alerts']}"
         )
