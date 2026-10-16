@@ -109,6 +109,17 @@ class LiveBrain:
                 time.sleep(min(2 ** attempt, 30))
                 continue
 
+            if response.status_code == 429 and _is_daily_cap(response):
+                # A per-day cap (TPD) is not a burst limit: the API asks us to
+                # wait many minutes/hours, so retrying would just hang the run.
+                # Fail fast and point at the offline brain instead.
+                raise RuntimeError(
+                    "Groq daily token limit reached (per-day cap, not a burst limit) — "
+                    "retrying will not help until it resets.\n"
+                    "  * Run the demo with --offline for the full graph investigation now, or\n"
+                    "  * wait for the daily limit to reset, then re-run without --offline.\n"
+                    f"  API said: {(response.text or '')[:160]}"
+                ) from None
             if response.status_code in (429, 500, 502, 503, 504):
                 if attempt == self.MAX_RETRIES:
                     raise RuntimeError(
@@ -199,6 +210,16 @@ def _last_user_message(messages: list[dict]) -> str:
             if isinstance(content, str):
                 return content
     return ""
+
+
+def _is_daily_cap(response: Any) -> bool:
+    """True when a 429 is Groq's per-day token cap (TPD), not a burst limit.
+
+    The daily cap needs a wait measured in minutes/hours, so the retry loop
+    should give up immediately rather than spin.
+    """
+    text = (getattr(response, "text", "") or "").lower()
+    return ("per day" in text) or ("tokens per day" in text) or ("tpd" in text)
 
 
 def _retry_delay(response: Any, attempt: int) -> float:
