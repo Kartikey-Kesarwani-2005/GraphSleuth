@@ -17,18 +17,21 @@ import json
 import re
 from typing import Any
 
-from . import memory, tools
+from . import db, memory, tools
 from .config import config
 from .llm import LLMResponse, ScriptedBrain, get_brain
 from .tools import TOOL_SPECS, execute
 
 SYSTEM_PROMPT = """You are GraphSleuth, a fraud investigation agent. Your context layer is a
 FalkorDB graph that contains accounts, people, devices, merchants, transactions, alerts,
-cases, and your own long-term memory. You reason by following relationships, never by guessing.
+cases, agent handoffs, and your own long-term memory. You reason by following relationships,
+never by guessing. (Each tenant has its own graph — everything you see is your tenant's data.)
 
 Working rules:
 1. Evidence only. Every claim in your final answer must come from a tool result. If the graph
-   does not show it, say so instead of inventing it.
+   does not show it, say so instead of inventing it — this includes actions: only list a tool
+   under "Actions taken" if you actually called it in this session. A false action in the report
+   is worse than an incomplete one.
 2. Start with memory. Call `recall` before investigating — a previous session may already know
    something about this entity or beneficiary.
 3. Resolve ids with `entity_search`, then expand with `graph_neighbors` (depth 1-3).
@@ -37,12 +40,20 @@ Working rules:
 5. To look past a single account use `detect_suspicious_cluster` (union-find over shared
    devices, corroborated by shared beneficiaries and prior alerts).
 6. Prove relationships with `shortest_connection` so the path can be shown.
-7. `run_cypher` is the read-only escape hatch when no other tool fits.
-8. Two or more of {shared device, shared beneficiary, prior alert} on the same account is a
+7. For whole-graph structure use the graph algorithms: `centrality` (which node bridges every
+   path), `page_rank` (structural hubs), `connected_components` (isolated islands),
+   `community_detection` (who clusters with whom).
+8. `run_cypher` is the read-only escape hatch when no other tool fits.
+9. Two or more of {shared device, shared beneficiary, prior alert} on the same account is a
    strong mule-ring signal and justifies escalation.
-9. Act when the evidence supports it: `open_case`, `add_case_note`, `flag_account` (quote the
-   signals in the reason). These are real graph writes — they persist for other agents.
-10. Finish by calling `remember` with what you concluded, linked to the entities involved, so
+10. Act when the evidence supports it: `open_case`, `add_case_note`, `flag_account` (quote the
+    signals in the reason). These are real graph writes — they persist for other agents.
+11. If a handoff is waiting (`list_handoffs`), call `accept_handoff` first and continue the
+    previous agent's work instead of starting from scratch.
+12. If you are the triage agent: triage quickly (`list_alerts`, `find_shared_links`,
+    `detect_suspicious_cluster`), then either `create_handoff(to_role='investigator', ...)`
+    with the full context, or close it out as non-escalation.
+13. Finish by calling `remember` with what you concluded, linked to the entities involved, so
     the next session starts smarter than this one did.
 
 Final answer format (always, in this order):
@@ -50,7 +61,9 @@ Final answer format (always, in this order):
 - **Evidence chain** — numbered hops with entity ids and relationship types.
 - **Graph path** — a compact chain like `ACC-EXT-01 -[TX-9000]-> ACC-9001 -[TX-9001]-> ACC-9002`.
 - **Tools & queries used** — names of the tools you called.
-- **Actions taken** — cases opened, alerts raised, memory written.
+- **Actions taken** — the write tools you really called this session (`open_case`,
+  `add_case_note`, `flag_account`, `create_handoff`, `accept_handoff`, `remember`) with their ids.
+  If you only read, write exactly: `None — read-only investigation.`
 - **Confidence** — high/medium/low, plus what evidence is still missing.
 """
 
@@ -64,12 +77,20 @@ class GraphSleuth:
         session_id: str | None = None,
         brain: Any = None,
         verbose: bool = True,
+        role: str = "investigator",
+        prompt: str | None = None,
+        max_rounds: int | None = None,
+        scripted: Any = None,
     ) -> None:
         self.tenant = tenant
         self.session_id = session_id or memory.new_session_id()
         self.verbose = verbose
         self.history: list[dict] = []
+        self.role = role
+        self.system_prompt = prompt or SYSTEM_PROMPT
+        self.max_rounds = int(max_rounds or config.max_tool_rounds)
         self._brain_override = brain
+        self._scripted = scripted
 
     # -- internals ---------------------------------------------------------- #
     def _brain(self):
@@ -77,7 +98,7 @@ class GraphSleuth:
             return self._brain_override
         if config.use_live_llm():
             return get_brain()
-        return get_brain(scripted=build_demo_brain())
+        return get_brain(scripted=self._scripted or build_demo_brain())
 
     def _log(self, message: str) -> None:
         if self.verbose:
@@ -85,7 +106,11 @@ class GraphSleuth:
 
     def _briefing(self, question: str) -> str:
         digest = memory.context_digest(question, self.tenant)
-        return f"{SYSTEM_PROMPT}\n\n# Memory briefing (from the graph, tenant={self.tenant})\n{digest}"
+        return (
+            f"{self.system_prompt}\n\n"
+            f"# Memory briefing (from the graph, tenant={self.tenant}, "
+            f"session={self.session_id}, role={self.role})\n{digest}"
+        )
 
     @staticmethod
     def _assistant_message(response: LLMResponse) -> dict:
@@ -101,9 +126,34 @@ class GraphSleuth:
             ]
         return message
 
+    def _prune(self, messages: list[dict], keep: int = 8) -> None:
+        """Trim old tool exchanges out of the live prompt.
+
+        Keeps the system + user turn plus the most recent `keep` messages. The
+        complete evidence trail still lives in `self.history` (that is what the
+        report and the memory write are built from), so a free-tier token cap
+        only ever costs the model *chat* recall, never evidence.
+        """
+        if len(messages) <= keep + 2:
+            return
+        head = messages[:2]
+        tail = messages[2:]
+        # Drop whole rounds so a tool reply never loses its assistant message.
+        while len(tail) > keep:
+            dropped = tail.pop(0)
+            if dropped.get("role") == "assistant":
+                while tail and tail[0].get("role") == "tool":
+                    tail.pop(0)
+        messages[:] = head + tail
+
     # -- public API --------------------------------------------------------- #
     def ask(self, question: str) -> dict:
         """Investigate a question and return the verdict plus the full evidence trail."""
+        # Everything below runs against THIS tenant's graph, and tool actions are
+        # stamped with THIS session (handoffs, memory writes).
+        db.set_tenant(self.tenant)
+        tools.bind_session(self.session_id)
+
         memory.append_message(self.session_id, "user", question, self.tenant)
         messages: list[dict] = [
             {"role": "system", "content": self._briefing(question)},
@@ -112,28 +162,45 @@ class GraphSleuth:
         brain = self._brain()
         answer: str | None = None
         rounds = 0
+        seen_calls: set[str] = set()
 
-        while rounds < config.max_tool_rounds:
+        while rounds < self.max_rounds:
             rounds += 1
-            response = brain.chat(messages, TOOL_SPECS, history=self.history)
+            # The final round is reserved for the verdict so the agent can never
+            # run out of budget mid-investigation.
+            force_answer = rounds >= self.max_rounds
+            response = brain.chat(
+                messages, TOOL_SPECS, history=self.history, force_answer=force_answer
+            )
             messages.append(self._assistant_message(response))
 
             if response.tool_calls:
                 for call in response.tool_calls:
                     self._log(f"  [{rounds}] {call.name}({_short_args(call.arguments)})")
-                    result = execute(call.name, call.arguments)
-                    self.history.append(
-                        {"tool": call.name, "arguments": call.arguments, "result": result}
-                    )
-                    self._log(f"      -> {_summarise_result(result)}")
+                    signature = f"{call.name}:{json.dumps(call.arguments, sort_keys=True, default=str)}"
+                    if signature in seen_calls:
+                        # Same tool, same arguments, again: don't pay for it twice
+                        # (free tiers cap tokens) and nudge the model to move on.
+                        self._log("      -> (duplicate call skipped)")
+                        content = json.dumps(
+                            {
+                                "note": "duplicate call skipped — you already have this exact "
+                                "result above; use it and continue (or write the final report)."
+                            },
+                            ensure_ascii=False,
+                        )
+                    else:
+                        seen_calls.add(signature)
+                        result = execute(call.name, call.arguments)
+                        self.history.append(
+                            {"tool": call.name, "arguments": call.arguments, "result": result}
+                        )
+                        self._log(f"      -> {_summarise_result(result)}")
+                        content = json.dumps(result, default=str, ensure_ascii=False)[:1200]
                     messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call.id,
-                            "name": call.name,
-                            "content": json.dumps(result, default=str, ensure_ascii=False)[:6000],
-                        }
+                        {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": content}
                     )
+                self._prune(messages)
                 continue
 
             answer = response.content
@@ -155,8 +222,10 @@ class GraphSleuth:
             "trace": self.history,
             "session_id": self.session_id,
             "tenant": self.tenant,
+            "role": self.role,
             "rounds": rounds,
-            "brain": "live" if config.use_live_llm() else "demo",
+            "brain": "live" if getattr(brain, "provider", None) else "offline-scripted",
+            "provider": getattr(brain, "provider", "offline fallback"),
         }
 
 
@@ -191,13 +260,14 @@ def _compact(value: Any) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# offline / demo brain
+# offline fallback brain (used only when no LLM key is configured)
 # --------------------------------------------------------------------------- #
-def build_demo_brain(target: str = "ACC-9003") -> ScriptedBrain:
+def build_demo_brain(target: str = "ACC-9003", handoff: bool = False) -> ScriptedBrain:
     """The investigation a well-behaved model would run, hand-scripted.
 
-    Keeps the project fully demoable without an API key, and doubles as the
-    script for the judged walkthrough.
+    Keeps the project fully runnable without an API key, and doubles as the
+    script for the judged walkthrough. With `handoff=True` the plan starts by
+    picking up a pending handoff (the two-agent pipeline).
     """
 
     def from_result(tool: str, key: str, default: Any = "") -> Any:
@@ -227,7 +297,13 @@ def build_demo_brain(target: str = "ACC-9003") -> ScriptedBrain:
                     return f"{top['size']}-account cluster ({accounts}), score {top['cluster_score']}"
         return f"cluster around {target}"
 
-    plan: list[tuple[str, Any]] = [
+    plan: list[tuple[str, Any]] = []
+    if handoff:
+        plan += [
+            ("list_handoffs", {"status": "pending", "limit": 3}),
+            ("accept_handoff", lambda history: {"handoff_id": _pending_handoff(history)}),
+        ]
+    plan += [
         ("recall", {"query": target}),
         ("entity_search", {"query": target}),
         ("graph_neighbors", {"entity_id": target, "depth": 2}),
@@ -297,6 +373,13 @@ def _last(history: list[dict], tool: str) -> dict | None:
         if entry["tool"] == tool and isinstance(entry["result"], dict):
             return entry["result"]
     return None
+
+
+def _pending_handoff(history: list[dict]) -> str:
+    """Handoff id of the newest pending handoff seen by `list_handoffs`."""
+    result = _last(history, "list_handoffs") or {}
+    handoffs = result.get("handoffs") or []
+    return handoffs[0]["handoff_id"] if handoffs else ""
 
 
 def _dedupe_ids(ids: list[str]) -> list[str]:

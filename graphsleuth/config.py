@@ -27,19 +27,49 @@ class Config:
     falkordb_password: str = _env("FALKORDB_PASSWORD")
     graph_name: str = _env("FALKORDB_GRAPH", "graphsleuth")
 
+    # Groq (https://console.groq.com) — OpenAI-compatible, free tier.
+    groq_api_key: str = _env("GROQ_API_KEY")
+    groq_base_url: str = _env("GROQ_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
+    groq_model: str = _env("GROQ_MODEL", "openai/gpt-oss-120b")
+
+    # Any other OpenAI-compatible endpoint (OpenRouter, Gemini, Ollama, ...).
     openai_api_key: str = _env("OPENAI_API_KEY")
     openai_base_url: str = _env("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
     openai_model: str = _env("OPENAI_MODEL", "gpt-4o-mini")
 
     llm_mode: str = _env("LLM_MODE", "auto").lower()  # auto | live | demo
+    llm_reasoning_effort: str = _env("LLM_REASONING_EFFORT", "low")
     max_tool_rounds: int = int(_env("MAX_TOOL_ROUNDS", "12") or 12)
+
+    # ------------------------------------------------------------------ #
+    # Which endpoint the live brain talks to (GROQ_API_KEY wins if set).
+    # ------------------------------------------------------------------ #
+    @property
+    def llm_api_key(self) -> str:
+        return self.groq_api_key or self.openai_api_key
+
+    @property
+    def llm_base_url(self) -> str:
+        return self.groq_base_url if self.groq_api_key else self.openai_base_url
+
+    @property
+    def llm_model(self) -> str:
+        return self.groq_model if self.groq_api_key else self.openai_model
+
+    @property
+    def llm_provider(self) -> str:
+        if self.groq_api_key:
+            return f"groq:{self.groq_model}"
+        if self.openai_api_key:
+            return f"openai-compatible:{self.openai_model}"
+        return "none"
 
     @property
     def has_llm_key(self) -> bool:
-        return bool(self.openai_api_key)
+        return bool(self.llm_api_key)
 
     def use_live_llm(self) -> bool:
-        """Decide between the real LLM and the scripted demo brain."""
+        """Decide between the real LLM and the offline fallback brain."""
         if self.llm_mode == "demo":
             return False
         if self.llm_mode == "live":

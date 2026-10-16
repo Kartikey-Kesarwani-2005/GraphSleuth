@@ -1,7 +1,22 @@
-"""FalkorDB connection helpers.
+"""FalkorDB connection helpers — multigraph, one graph per tenant.
 
 Everything the agent knows lives in the graph. This module is the only place
 that talks to FalkorDB directly; the rest of the code goes through `query()`.
+
+Multigraph topology (Track 01/02 brief: "leverage multigraph topology",
+"separate memory per user or tenant"):
+
+    every tenant gets its OWN FalkorDB graph:  <FALKORDB_GRAPH>:<tenant>
+    e.g.  graphsleuth:default, graphsleuth:acme, graphsleuth:bank-x
+
+Isolation is therefore topological, not a WHERE-clause convention: agent A
+physically cannot read agent B's memory or fraud records, while both run on
+one FalkorDB instance (concurrent reads/writes across graphs).
+
+The active tenant travels through a `ContextVar`, so `db.query(...)` anywhere
+in the code base runs against the right graph without threading a tenant
+argument through every call site. `db.tenant_scope(...)` switches it explicitly
+(the agent loop and the MCP tools use it).
 
 Convention used by this project: internal queries return **one column** aliased
 `AS row`, so the code never has to depend on FalkorDB's result header parsing.
@@ -9,13 +24,53 @@ Convention used by this project: internal queries return **one column** aliased
 
 from __future__ import annotations
 
-from typing import Any
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Any, Iterator
 
 from falkordb import FalkorDB
 
 from .config import config
 
+DEFAULT_TENANT = "default"
+
 _client: FalkorDB | None = None
+_graphs: dict[str, Any] = {}
+_tenant: ContextVar[str] = ContextVar("graphsleuth_tenant", default=DEFAULT_TENANT)
+
+
+# --------------------------------------------------------------------------- #
+# multigraph: tenant -> graph name
+# --------------------------------------------------------------------------- #
+def graph_name_for(tenant: str) -> str:
+    """Name of the FalkorDB graph that belongs to one tenant."""
+    tenant = (tenant or DEFAULT_TENANT).strip().lower() or DEFAULT_TENANT
+    return f"{config.graph_name}:{tenant}"
+
+
+def resolve_tenant(tenant: str | None = None) -> str:
+    """Explicit tenant wins, else the tenant of the current context."""
+    if tenant:
+        return tenant.strip().lower() or DEFAULT_TENANT
+    return _tenant.get()
+
+
+def set_tenant(tenant: str) -> None:
+    """Pin the current context (thread / async task) to a tenant graph."""
+    _tenant.set(resolve_tenant(tenant))
+
+
+@contextmanager
+def tenant_scope(tenant: str | None) -> Iterator[str]:
+    """Run a block against one tenant's graph, then restore the previous one."""
+    if not tenant:
+        yield _tenant.get()
+        return
+    token = _tenant.set(resolve_tenant(tenant))
+    try:
+        yield _tenant.get()
+    finally:
+        _tenant.reset(token)
 
 
 def client() -> FalkorDB:
@@ -33,10 +88,53 @@ def client() -> FalkorDB:
 
 
 def graph(name: str | None = None):
-    """Select the graph (database) that holds the fraud network + agent memory."""
-    return client().select_graph(name or config.graph_name)
+    """Select a graph by name, or the graph of the active tenant."""
+    graph_name = name or graph_name_for(resolve_tenant())
+    handle = _graphs.get(graph_name)
+    if handle is None:
+        handle = client().select_graph(graph_name)
+        _graphs[graph_name] = handle
+    return handle
 
 
+def list_graphs() -> list[str]:
+    """Every graph on this FalkorDB instance (one per tenant, plus leftovers)."""
+    try:
+        return sorted(str(name) for name in client().list_graphs())
+    except Exception:  # pragma: no cover - admin helper, never fatal
+        return []
+
+
+def graph_stats(name: str) -> dict[str, Any]:
+    """Node / relationship counts for one graph (used by `status`)."""
+    try:
+        rows = graph(name).query(
+            "MATCH (n) WITH count(n) AS nodes "
+            "OPTIONAL MATCH ()-[r]->() RETURN [nodes, count(r)] AS row"
+        ).result_set
+        counts = rows[0] if rows else [0, 0]
+        return {"graph": name, "nodes": counts[0], "relationships": counts[1]}
+    except Exception as exc:  # pragma: no cover - admin helper, never fatal
+        return {"graph": name, "error": str(exc)[:200]}
+
+
+def drop_graph(name: str) -> bool:
+    """Delete a whole tenant graph (GRAPH.DELETE). Used by seed --wipe-tenant."""
+    try:
+        client().execute_command("GRAPH.DELETE", name)
+        _graphs.pop(name, None)
+        return True
+    except Exception:  # pragma: no cover - admin helper, never fatal
+        return False
+
+
+def drop_tenant(tenant: str) -> bool:
+    return drop_graph(graph_name_for(tenant))
+
+
+# --------------------------------------------------------------------------- #
+# results
+# --------------------------------------------------------------------------- #
 def to_json(value: Any) -> Any:
     """Convert FalkorDB values (nodes, relationships, paths) into plain JSON data."""
     if value is None or isinstance(value, (str, int, float, bool)):
@@ -70,13 +168,17 @@ def to_json(value: Any) -> Any:
     return str(value)
 
 
-def query(cypher: str, params: dict[str, Any] | None = None) -> list[Any]:
-    """Run a Cypher query and return a list of JSON-safe `row` values.
+def query(
+    cypher: str,
+    params: dict[str, Any] | None = None,
+    tenant: str | None = None,
+) -> list[Any]:
+    """Run a Cypher query on the active tenant's graph (or an explicit one).
 
     Queries should `RETURN <expr> AS row`. If the result has several columns we
     return positional dicts, which keeps ad-hoc Cypher usable from the agent.
     """
-    result = graph().query(cypher, params or {})
+    result = graph(graph_name_for(resolve_tenant(tenant))).query(cypher, params or {})
     raw_rows = list(getattr(result, "result_set", []) or [])
     headers = _header_names(result)
 
@@ -108,6 +210,8 @@ def _header_names(result: Any) -> list[str] | None:
 
 def ping() -> dict[str, Any]:
     """Connectivity check used by `python -m graphsleuth status`."""
+    tenant = resolve_tenant()
+    name = graph_name_for(tenant)
     rows = query("RETURN 1 AS row")
     counts = query(
         "MATCH (n) WITH count(n) AS nodes "
@@ -117,7 +221,9 @@ def ping() -> dict[str, Any]:
     return {
         "connected": rows == [1],
         "host": f"{config.falkordb_host}:{config.falkordb_port}",
-        "graph": config.graph_name,
+        "tenant": tenant,
+        "graph": name,
+        "graphs": list_graphs(),
         "nodes": counts[0][0] if counts else 0,
         "relationships": counts[0][1] if counts else 0,
     }

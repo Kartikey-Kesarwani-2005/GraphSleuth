@@ -7,21 +7,46 @@ agent can explain *how* it got there.
 Two families:
 
 * **read tools**  — entity_search, graph_neighbors, trace_money_flow,
-  find_shared_links, detect_suspicious_cluster, shortest_connection, run_cypher
-* **write tools** — flag_account, open_case, add_case_note, remember, recall
+  find_shared_links, detect_suspicious_cluster, shortest_connection,
+  page_rank, connected_components, community_detection, centrality,
+  list_alerts, list_handoffs, run_cypher
+* **write tools** — flag_account, open_case, add_case_note, create_handoff,
+  accept_handoff, remember, recall
   (these are the *actions* the agent takes; they are written back into the graph)
+
+The four algorithm tools call FalkorDB's **native graph procedures**
+(`algo.WCC`, `algo.labelPropagation`, `algo.betweenness`, `algo.pageRank`) —
+graph algorithms are first-class agent tools, not Python helpers bolted on.
 """
 
 from __future__ import annotations
 
 import re
+import threading
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 from . import db, memory
 
 MAX_ROWS = 60
+
+# Nodes the agent writes about itself. They are useful context but must never be
+# traversed as if they were part of the fraud network (see shortest_connection).
+INTERNAL_LABELS = {"Handoff", "MemoryNote", "Session", "Message"}
+
+# Session that is currently executing tool calls (stamped onto handoffs).
+_session: ContextVar[str] = ContextVar("graphsleuth_session", default="")
+
+
+def bind_session(session_id: str) -> None:
+    """Bind tool calls in this context to an agent session."""
+    _session.set(session_id or "")
+
+
+def current_session() -> str:
+    return _session.get()
 
 
 # --------------------------------------------------------------------------- #
@@ -454,6 +479,10 @@ def shortest_connection(id_a: str, id_b: str, max_depth: int = 6, via: Any = Non
     `via` optionally restricts the walk to specific relationship types, e.g.
     ``["ORIGINATED", "DESTINED"]`` to follow money only instead of letting the
     path cut through unrelated nodes such as cases or alerts.
+
+    Agent-internal nodes (`Handoff`, `MemoryNote`, `Session`, `Message`) are
+    never used as stepping stones: the agent's own bookkeeping must not become
+    a shortcut through the fraud network it is investigating.
     """
     max_depth = max(1, min(int(max_depth), 8))
     if isinstance(via, str):
@@ -480,6 +509,8 @@ def shortest_connection(id_a: str, id_b: str, max_depth: int = 6, via: Any = Non
                 summary = _node_summary(neighbour)
                 neighbour_id = summary.get("id")
                 if not neighbour_id or neighbour_id in parents:
+                    continue
+                if neighbour_id != id_b and INTERNAL_LABELS & set(summary.get("labels") or []):
                     continue
                 parents[neighbour_id] = (current, rel_type)
                 if neighbour_id == id_b:
@@ -532,6 +563,353 @@ READ_ONLY_BLOCKLIST = re.compile(
     r"\b(CREATE|DELETE|DETACH|SET|MERGE|REMOVE|DROP|ALTER|LOAD)\b", re.IGNORECASE
 )
 ALLOWED_START = ("MATCH", "OPTIONAL", "RETURN", "WITH", "CALL", "UNWIND", "SHOW", "EXPLAIN")
+
+
+# --------------------------------------------------------------------------- #
+# graph algorithms as agent tools (FalkorDB native procedures)
+# --------------------------------------------------------------------------- #
+def _ranked_rows(rows: list[Any], label: str, top: int, score_index: int = 1) -> list[dict]:
+    """Shape `[id, score]` rows from an algorithm into a ranked top-N list."""
+    entries: list[dict] = []
+    for row in rows:
+        if not isinstance(row, (list, tuple)) or len(row) < 2:
+            continue
+        entity, score = row[0], row[score_index]
+        if label and not _has_label(entity, label):
+            continue
+        entries.append({"entity": str(entity), "score": round(float(score), 5)})
+    entries.sort(key=lambda item: item["score"], reverse=True)
+    for index, entry in enumerate(entries[:top]):
+        entry["rank"] = index + 1
+    return entries[:top]
+
+
+_LABEL_CACHE: dict[str, set[str]] = {}
+_LABEL_LOCK = threading.Lock()
+
+
+def _has_label(entity: Any, label: str) -> bool:
+    """Does this entity id carry the given label? Cached per call context."""
+    with _LABEL_LOCK:
+        known = _LABEL_CACHE.get(label)
+    if known is None:
+        known = _labelled_ids(label)
+        with _LABEL_LOCK:
+            _LABEL_CACHE[label] = known
+    return str(entity) in known
+
+
+def page_rank(top: int = 10, label: str = "") -> dict:
+    """PageRank: which entities sit at the centre of the flow through the graph.
+
+    Tries FalkorDB's native `algo.pageRank` first. Some falkordb:latest builds
+    yield zero rows from that procedure (verified on this dataset), so the tool
+    falls back to an in-process power iteration over the same graph — the
+    `engine` field always says which one produced the answer.
+    """
+    top = max(1, min(int(top), 50))
+
+    rows: list[Any] = []
+    try:
+        rows = db.query(
+            "CALL algo.pageRank(10, 0.85) YIELD node, score "
+            "RETURN [coalesce(node.id, node.name), score] AS row"
+        )
+        engine = "falkordb:algo.pageRank"
+    except Exception:
+        rows = []
+    if rows:
+        return {
+            "algorithm": "pagerank",
+            "engine": engine,
+            "label": label or "any",
+            "nodes_ranked": len(rows),
+            "top": _ranked_rows(rows, label, top),
+        }
+
+    return {
+        "algorithm": "pagerank",
+        "engine": "in-process power iteration (algo.pageRank yielded 0 rows)",
+        "label": label or "any",
+        **_pagerank_python(label, top),
+    }
+
+
+def _pagerank_python(label: str, top: int, iterations: int = 20, damping: float = 0.85) -> dict:
+    edges = db.query(
+        "MATCH (a)-[r]->(b) "
+        "RETURN [coalesce(a.id, a.name, toString(id(a))), "
+        "        coalesce(b.id, b.name, toString(id(b)))] AS row"
+    )
+    pairs = [(row[0], row[1]) for row in edges if isinstance(row, (list, tuple)) and len(row) == 2]
+    nodes: set[str] = {str(node) for pair in pairs for node in pair}
+    if label:
+        nodes |= _labelled_ids(label)
+    if not nodes:
+        return {"nodes_ranked": 0, "top": []}
+
+    outgoing: dict[str, list[str]] = {node: [] for node in nodes}
+    for source, target in pairs:
+        if source in nodes and target in nodes:
+            outgoing[source].append(target)
+
+    rank = {node: 1.0 / len(nodes) for node in nodes}
+    for _ in range(iterations):
+        dangling = sum(rank[node] for node in nodes if not outgoing[node])
+        base = (1.0 - damping) / len(nodes) + damping * dangling / len(nodes)
+        updated = {node: base for node in nodes}
+        for source, targets in outgoing.items():
+            if not targets or not rank[source]:
+                continue
+            share = damping * rank[source] / len(targets)
+            for target in targets:
+                updated[target] += share
+        rank = updated
+
+    rows = [[node, score] for node, score in rank.items()]
+    return {"nodes_ranked": len(nodes), "top": _ranked_rows(rows, label, top)}
+
+
+def _labelled_ids(label: str) -> set[str]:
+    rows = db.query(
+        "MATCH (n) WHERE $label IN labels(n) "
+        "RETURN coalesce(n.id, n.name, toString(id(n))) AS row",
+        {"label": label},
+    )
+    return {str(row) for row in rows}
+
+
+def connected_components(top: int = 8, min_size: int = 2) -> dict:
+    """Weakly connected components (`algo.WCC`): which parts of the graph form
+    islands? Small islands around an alert are a strong 'isolated ring' signal."""
+    rows = db.query(
+        "CALL algo.WCC() YIELD node, componentId "
+        "WITH componentId, collect(coalesce(node.id, node.name)) AS members "
+        "RETURN members AS row"
+    )
+    groups = [sorted(str(member) for member in row) for row in rows if isinstance(row, list)]
+    groups = [group for group in groups if len(group) >= max(1, int(min_size))]
+    groups.sort(key=len, reverse=True)
+    top_groups = [
+        {"size": len(group), "members": group[:25]} for group in groups[: max(1, int(top))]
+    ]
+    return {
+        "algorithm": "wcc (weakly connected components)",
+        "engine": "falkordb:algo.WCC",
+        "components_found": len(groups),
+        "components": top_groups,
+    }
+
+
+def community_detection(top: int = 8, min_size: int = 2) -> dict:
+    """Label propagation: dense communities in the graph (who clusters with whom)."""
+    rows = db.query(
+        "CALL algo.labelPropagation() YIELD node, communityId "
+        "WITH communityId, collect(coalesce(node.id, node.name)) AS members "
+        "RETURN members AS row"
+    )
+    groups = [sorted(str(member) for member in row) for row in rows if isinstance(row, list)]
+    groups = [group for group in groups if len(group) >= max(1, int(min_size))]
+    groups.sort(key=len, reverse=True)
+    top_groups = [
+        {"size": len(group), "members": group[:25]} for group in groups[: max(1, int(top))]
+    ]
+    return {
+        "algorithm": "label propagation",
+        "engine": "falkordb:algo.labelPropagation",
+        "communities_found": len(groups),
+        "communities": top_groups,
+    }
+
+
+def centrality(kind: str = "betweenness", top: int = 10, label: str = "") -> dict:
+    """Centrality: which nodes bridge (betweenness) or sit closest to all others
+    (harmonic). Use it to find the account every path in the ring runs through."""
+    procedures = {
+        "betweenness": "algo.betweenness",
+        "harmonic": "algo.HarmonicCentrality",
+    }
+    kind = kind if kind in procedures else "betweenness"
+    rows = db.query(
+        f"CALL {procedures[kind]}() YIELD node, score "
+        "RETURN [coalesce(node.id, node.name), score] AS row"
+    )
+    return {
+        "algorithm": kind,
+        "engine": f"falkordb:{procedures[kind]}",
+        "label": label or "any",
+        "nodes_ranked": len(rows),
+        "top": _ranked_rows(rows, label, max(1, min(int(top), 50))),
+    }
+
+
+def list_alerts(status: str = "", severity: str = "", limit: int = 10) -> dict:
+    """Read alerts raised on accounts — the queue a triage agent works through."""
+    rows = db.query(
+        """
+        MATCH (a:Account)-[:FLAGGED_BY]->(al:Alert)
+        WHERE ($status = '' OR coalesce(al.status, '') = $status)
+          AND ($sev = '' OR coalesce(al.severity, '') = $sev)
+        WITH al, a
+        ORDER BY al.created_at DESC
+        LIMIT $limit
+        RETURN [al.id, al.severity, coalesce(al.status, ''), a.id,
+                coalesce(al.reason, ''), al.created_at] AS row
+        """,
+        {"status": (status or "").strip().lower(), "sev": (severity or "").strip().lower(), "limit": max(1, int(limit))},
+    )
+    alerts = [
+        {
+            "alert_id": row[0],
+            "severity": row[1],
+            "status": row[2],
+            "account": row[3],
+            "reason": row[4],
+            "created_at": row[5],
+        }
+        for row in rows
+        if isinstance(row, (list, tuple)) and len(row) == 6
+    ]
+    return {"alerts": alerts, "count": len(alerts)}
+
+
+# --------------------------------------------------------------------------- #
+# multi-agent handoffs — state shared between agents through the graph
+# --------------------------------------------------------------------------- #
+HANDOFF_ROLES = {"triage", "investigator", "analyst"}
+
+
+def create_handoff(
+    to_role: str,
+    context: str,
+    from_role: str = "",
+    case_id: str = "",
+    entity_ids: list[str] | None = None,
+) -> dict:
+    """ACTION: hand the current investigation to another agent.
+
+    The handoff is a `Handoff` node in the *shared* graph — the receiving agent
+    reads it with `list_handoffs`, so state passes between agents through
+    FalkorDB rather than through a caller (Track 02: shared state + handoffs).
+    """
+    to_role = (to_role or "").strip().lower()
+    if to_role not in HANDOFF_ROLES:
+        return {"error": f"to_role must be one of {sorted(HANDOFF_ROLES)}"}
+    if not context.strip():
+        return {"error": "context is required — the next agent needs to know why"}
+
+    handoff_id = f"HANDOFF-{uuid.uuid4().hex[:6]}"
+    from_role = (from_role or "triage").strip().lower()
+    session = current_session()
+    db.query(
+        """
+        CREATE (h:Handoff {id: $id, from_role: $from, to_role: $to, status: 'pending',
+                context: $ctx, created_by: $sid, created_at: $ts})
+        RETURN h.id AS row
+        """,
+        {"id": handoff_id, "from": from_role, "to": to_role, "ctx": context[:4000],
+         "sid": session, "ts": _now()},
+    )
+
+    linked: list[str] = []
+    for entity_id in entity_ids or []:
+        rows = db.query(
+            "MATCH (h:Handoff {id: $hid}), (e {id: $eid}) MERGE (h)-[:ABOUT]->(e) RETURN e.id AS row",
+            {"hid": handoff_id, "eid": entity_id},
+        )
+        if rows:
+            linked.append(entity_id)
+
+    case_linked = ""
+    if case_id:
+        rows = db.query(
+            "MATCH (h:Handoff {id: $hid}), (c:Case {id: $cid}) MERGE (h)-[:HANDLED_FOR]->(c) "
+            "RETURN c.id AS row",
+            {"hid": handoff_id, "cid": case_id},
+        )
+        case_linked = rows[0] if rows else ""
+
+    return {
+        "handoff_id": handoff_id,
+        "from_role": from_role,
+        "to_role": to_role,
+        "status": "pending",
+        "case": case_linked,
+        "linked_entities": linked,
+        "created_by": session,
+        "context": context[:300],
+    }
+
+
+def list_handoffs(status: str = "pending", limit: int = 5) -> dict:
+    """Read handoffs waiting for this kind of agent (plus their case + entities)."""
+    rows = db.query(
+        """
+        MATCH (h:Handoff)
+        WHERE ($status = '' OR h.status = $status)
+        WITH h
+        ORDER BY h.created_at DESC
+        LIMIT $limit
+        OPTIONAL MATCH (h)-[:ABOUT]->(e)
+        OPTIONAL MATCH (h)-[:HANDLED_FOR]->(c:Case)
+        WITH h, collect(DISTINCT e.id) AS entities, collect(DISTINCT c.id) AS cases
+        RETURN [h.id, h.from_role, h.to_role, h.status, h.context, entities, cases,
+                h.created_at, coalesce(h.created_by, '')] AS row
+        """,
+        {"status": (status or "").strip().lower(), "limit": max(1, int(limit))},
+    )
+    handoffs = [
+        {
+            "handoff_id": row[0],
+            "from_role": row[1],
+            "to_role": row[2],
+            "status": row[3],
+            "context": row[4],
+            "entities": [x for x in (row[5] or []) if x],
+            "cases": [x for x in (row[6] or []) if x],
+            "created_at": row[7],
+            "created_by": row[8],
+        }
+        for row in rows
+        if isinstance(row, (list, tuple)) and len(row) == 9
+    ]
+    return {"handoffs": handoffs, "count": len(handoffs)}
+
+
+def accept_handoff(handoff_id: str) -> dict:
+    """ACTION: claim a handoff — marks it accepted and returns the full context."""
+    rows = db.query(
+        """
+        MATCH (h:Handoff {id: $id})
+        SET h.status = 'accepted', h.accepted_by = $sid, h.accepted_at = $ts
+        RETURN [h.id, h.from_role, h.to_role, h.context, h.status] AS row
+        """,
+        {"id": handoff_id, "sid": current_session(), "ts": _now()},
+    )
+    if not rows or not isinstance(rows[0], (list, tuple)):
+        return {"error": f"handoff {handoff_id} not found"}
+    detail = rows[0]
+    linked = db.query(
+        "MATCH (h:Handoff {id: $id}) OPTIONAL MATCH (h)-[:ABOUT]->(e) "
+        "OPTIONAL MATCH (h)-[:HANDLED_FOR]->(c:Case) "
+        "RETURN [collect(DISTINCT e.id), collect(DISTINCT c.id)] AS row",
+        {"id": handoff_id},
+    )
+    entities: list[str] = []
+    cases: list[str] = []
+    if linked and isinstance(linked[0], (list, tuple)):
+        entities = [x for x in (linked[0][0] or []) if x]
+        cases = [x for x in (linked[0][1] or []) if x]
+    return {
+        "handoff_id": detail[0],
+        "from_role": detail[1],
+        "to_role": detail[2],
+        "context": detail[3],
+        "status": detail[4],
+        "entities": entities,
+        "cases": cases,
+        "accepted_by": current_session(),
+    }
 
 
 def _strip_string_literals(cypher: str) -> str:
@@ -658,6 +1036,17 @@ def recall(query: str = "", kind: str = "") -> dict:
 # --------------------------------------------------------------------------- #
 # registry
 # --------------------------------------------------------------------------- #
+# Tools that change state. Reports use this to print a machine-verified
+# "actions taken" list instead of trusting whatever the model wrote in prose.
+MUTATING_TOOLS = {
+    "flag_account",
+    "open_case",
+    "add_case_note",
+    "create_handoff",
+    "accept_handoff",
+    "remember",
+}
+
 HANDLERS: dict[str, Callable[..., dict]] = {
     "entity_search": entity_search,
     "graph_neighbors": graph_neighbors,
@@ -665,10 +1054,18 @@ HANDLERS: dict[str, Callable[..., dict]] = {
     "find_shared_links": find_shared_links,
     "detect_suspicious_cluster": detect_suspicious_cluster,
     "shortest_connection": shortest_connection,
+    "page_rank": page_rank,
+    "connected_components": connected_components,
+    "community_detection": community_detection,
+    "centrality": centrality,
+    "list_alerts": list_alerts,
+    "list_handoffs": list_handoffs,
     "run_cypher": run_cypher,
     "flag_account": flag_account,
     "open_case": open_case,
     "add_case_note": add_case_note,
+    "create_handoff": create_handoff,
+    "accept_handoff": accept_handoff,
     "remember": remember,
     "recall": recall,
 }
@@ -763,6 +1160,91 @@ TOOL_SPECS: list[dict] = [
         ["id_a", "id_b"],
     ),
     _spec(
+        "page_rank",
+        "PageRank over the whole graph: which entities sit at the centre of the flow. "
+        "Use it to rank suspects/accounts by structural influence before investigating one. "
+        "Pass label='Account' to rank only accounts.",
+        {
+            "top": {"type": "integer", "description": "how many ranked entities, default 10"},
+            "label": {"type": "string", "description": "optional node label filter, e.g. 'Account'"},
+        },
+        [],
+    ),
+    _spec(
+        "connected_components",
+        "Run FalkorDB's WCC algorithm: which parts of the graph are separate islands? "
+        "Isolated clusters around an alert are a strong 'ring' signal; size>=2 only.",
+        {
+            "top": {"type": "integer", "description": "components to return, default 8"},
+            "min_size": {"type": "integer", "description": "ignore components smaller than this, default 2"},
+        },
+        [],
+    ),
+    _spec(
+        "community_detection",
+        "Run FalkorDB's label-propagation algorithm: dense communities in the graph — "
+        "who clusters with whom regardless of my assumptions about devices or beneficiaries.",
+        {
+            "top": {"type": "integer", "description": "communities to return, default 8"},
+            "min_size": {"type": "integer", "description": "ignore communities smaller than this, default 2"},
+        },
+        [],
+    ),
+    _spec(
+        "centrality",
+        "Graph centrality via FalkorDB: kind=betweenness (which nodes bridge other pairs — "
+        "the account every path runs through) or harmonic (closest to everyone). "
+        "Use it to find the hub of a mule ring.",
+        {
+            "kind": {"type": "string", "enum": ["betweenness", "harmonic"]},
+            "top": {"type": "integer", "description": "default 10"},
+            "label": {"type": "string", "description": "optional node label filter, e.g. 'Account'"},
+        },
+        [],
+    ),
+    _spec(
+        "list_alerts",
+        "Read the alert queue: accounts flagged before, newest first. "
+        "Start a triage pass with this to decide what deserves investigation.",
+        {
+            "status": {"type": "string", "description": "filter, e.g. 'open' or 'under_review'"},
+            "severity": {"type": "string", "enum": ["low", "medium", "high", "critical", ""]},
+            "limit": {"type": "integer", "description": "default 10"},
+        },
+        [],
+    ),
+    _spec(
+        "create_handoff",
+        "ACTION: hand the current investigation to another agent (role: investigator / triage / "
+        "analyst). Writes a Handoff node into the shared graph — context, case and entities — "
+        "so the next agent picks it up with list_handoffs without you pasting anything.",
+        {
+            "to_role": {"type": "string", "enum": ["investigator", "triage", "analyst"]},
+            "context": {"type": "string", "description": "why you are handing off + what you found so far"},
+            "from_role": {"type": "string", "description": "your role, default 'triage'"},
+            "case_id": {"type": "string", "description": "case this belongs to, if any"},
+            "entity_ids": {"type": "array", "items": {"type": "string"}},
+        },
+        ["to_role", "context"],
+    ),
+    _spec(
+        "list_handoffs",
+        "Read handoffs waiting to be picked up (default status=pending), with their case and "
+        "linked entities. Call this first when you are picking up someone else's work.",
+        {
+            "status": {"type": "string", "description": "'pending', 'accepted', or '' for all"},
+            "limit": {"type": "integer", "description": "default 5"},
+        },
+        [],
+    ),
+    _spec(
+        "accept_handoff",
+        "ACTION: claim a handoff for this session — marks it accepted and returns the full "
+        "context, case and entities the previous agent left for you.",
+        {"handoff_id": {"type": "string"}},
+        ["handoff_id"],
+    ),
+    _spec(
         "run_cypher",
         "Read-only Cypher escape hatch for questions the other tools cannot answer. "
         "Only MATCH / OPTIONAL MATCH / RETURN / WITH / CALL / UNWIND / SHOW / EXPLAIN. "
@@ -828,6 +1310,7 @@ TOOL_SPECS: list[dict] = [
 
 def execute(name: str, arguments: dict[str, Any]) -> dict:
     """Dispatch one tool call and always return JSON-safe data (errors included)."""
+    _LABEL_CACHE.clear()  # label lookups are per-call so flags show up immediately
     handler = HANDLERS.get(name)
     if handler is None:
         return {"error": f"unknown tool '{name}'", "available": sorted(HANDLERS)}

@@ -29,7 +29,7 @@ Write-Host "Installing dependencies ..."
 # --- 2. config file ---------------------------------------------------------
 if (-not (Test-Path ".env")) {
     Copy-Item ".env.example" ".env"
-    Write-Host "Created .env (add OPENAI_API_KEY to use a live model)."
+    Write-Host "Created .env (add GROQ_API_KEY — free at console.groq.com — for the real model)."
 }
 
 # --- 3. Docker engine -------------------------------------------------------
@@ -94,4 +94,6 @@ New-Item -ItemType Directory -Force -Path "demos\out" | Out-Null
 
 Write-Host ""
 Write-Host "Done. Report: demos\out\report.md" -ForegroundColor Green
-Write-Host "Interactive mode:  $python -m graphsleuth chat"
+Write-Host "Two-agent pipeline:  $python -m graphsleuth pipeline --target ACC-9003"
+Write-Host "Concurrency bench:   $python -m graphsleuth bench"
+Write-Host "Interactive mode:    $python -m graphsleuth chat"

@@ -93,6 +93,30 @@ def collect_graph_facts(trace: list[dict]) -> tuple[dict[str, str], list[tuple[s
     return nodes, _dedupe(edges)
 
 
+def _short(value: Any) -> str:
+    text = str(value)
+    return text if len(text) <= 40 else text[:37] + "..."
+
+
+def verified_actions(trace: list[dict]) -> list[str]:
+    """Write actions that were actually executed, read straight from the tool log.
+
+    A small model's prose is not trustworthy for this: it will happily claim it
+    opened a case it never opened. This list comes from the trace, so the report
+    can state what really happened regardless of what the answer text says.
+    """
+    from .tools import MUTATING_TOOLS
+
+    actions: list[str] = []
+    for entry in trace:
+        tool = entry.get("tool")
+        if tool in MUTATING_TOOLS:
+            args = entry.get("arguments") or {}
+            rendered = ", ".join(f"{key}={_short(value)}" for key, value in list(args.items())[:3])
+            actions.append(f"`{tool}({rendered})`")
+    return actions
+
+
 def _dedupe(edges: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
     seen: set[tuple[str, str, str]] = set()
     unique: list[tuple[str, str, str]] = []
@@ -122,6 +146,7 @@ def to_markdown(question: str, result: dict) -> str:
     """A complete, shareable investigation report (answer + evidence + diagram)."""
     trace = result.get("trace", [])
     nodes, edges = collect_graph_facts(trace)
+    actions = verified_actions(trace)
 
     parts = [
         "# GraphSleuth investigation report",
@@ -133,6 +158,10 @@ def to_markdown(question: str, result: dict) -> str:
         "## Verdict",
         "",
         result.get("answer", ""),
+        "",
+        "## Actions taken (verified from the tool log)",
+        "",
+        *([f"- {action}" for action in actions] or ["- _None — read-only investigation._"]),
         "",
         "## Evidence trail",
         "",

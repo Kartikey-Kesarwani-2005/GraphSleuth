@@ -1,8 +1,8 @@
 # GraphSleuth investigation report
 
 - **Question:** Investigate ACC-9003 — is this account part of a fraud ring?
-- **Session:** SES-88317db1   **Tenant:** default
-- **Brain:** demo   **Rounds:** 12
+- **Session:** SES-2ceb33a3   **Tenant:** default
+- **Brain:** offline-scripted   **Rounds:** 12
 
 ## Verdict
 
@@ -32,9 +32,16 @@ ACC-EXT-01 -[ORIGINATED]-> TX-9000 -[DESTINED]-> ACC-9001 -[ORIGINATED]-> TX-900
 
 **Tools & queries used** — recall, entity_search, graph_neighbors, trace_money_flow, find_shared_links, detect_suspicious_cluster, shortest_connection, open_case, add_case_note, flag_account, remember
 
-**Actions taken** — opened CASE-0002 involving ACC-9002, ACC-9004, ACC-9003, ACC-9100, ACC-9001, ACC-9005, DEV-9001, DEV-9002; added evidence note NOTE-82951a to CASE-0002; flagged ACC-9003 as high (AL-5a73a9), status under_review; wrote memory MEM-da382f24 linked to ['ACC-9002', 'ACC-9004', 'ACC-9003', 'ACC-9100', 'ACC-9001', 'ACC-9005']
+**Actions taken** — opened CASE-0002 involving ACC-9002, ACC-9004, ACC-9003, ACC-9100, ACC-9001, ACC-9005, DEV-9001, DEV-9002; added evidence note NOTE-f4893e to CASE-0002; flagged ACC-9003 as high (AL-82e5cd), status under_review; wrote memory MEM-11401f7f linked to ['ACC-9002', 'ACC-9004', 'ACC-9003', 'ACC-9100', 'ACC-9001', 'ACC-9005']
 
 **Confidence** — high. Signals agree (shared devices + shared beneficiary + prior alerts + same-day pass-through). Still missing: beneficial-owner confirmation for ACC-9100 and the source of funds behind ACC-EXT-01.
+
+## Actions taken (verified from the tool log)
+
+- `open_case(title=Mule ring around ACC-9003, summary=6-account cluster (ACC-9002, ACC-9004..., entity_ids=['ACC-9002', 'ACC-9004', 'ACC-9003', ...)`
+- `add_case_note(case_id=CASE-0002, text=Evidence: 6-account cluster (ACC-9002...)`
+- `flag_account(account_id=ACC-9003, severity=high, reason=Shares device DEV-9001/DEV-9002 with ...)`
+- `remember(kind=episodic, text=Investigated ACC-9003: 6-account clus..., about_ids=['ACC-9002', 'ACC-9004', 'ACC-9003', ...)`
 
 ## Evidence trail
 
@@ -65,13 +72,13 @@ ACC-EXT-01 -[ORIGINATED]-> TX-9000 -[DESTINED]-> ACC-9001 -[ORIGINATED]-> TX-900
     case_id: CASE-0002 | title: Mule ring around ACC-9003 | involves: 8 items | status: open
  9. add_case_note  [ok]
     args: {'case_id': 'CASE-0002', 'text': 'Evidence: 6-account cluster (ACC-9002, ACC-9004, ACC-9003, ACC-9100, ACC-9001, ACC-9005), score 41.05. Money chain traced from ACC-EXT-01 to ACC-9100 via the shared devices DEV-9001/DEV-9002; prior alerts on ACC-9001, ACC-9002 and ACC-9004.'}
-    case_id: CASE-0002 | note_id: NOTE-82951a | saved: True
+    case_id: CASE-0002 | note_id: NOTE-f4893e | saved: True
 10. flag_account  [ok]
     args: {'account_id': 'ACC-9003', 'severity': 'high', 'reason': 'Shares device DEV-9001/DEV-9002 with flagged accounts, is a pass-through hop in a same-day chain ending at ACC-9100, and sits in the top-ranked cluster.', 'case_id': 'CASE-0002'}
-    flagged: True | account: ACC-9003 | alert_id: AL-5a73a9 | severity: high | case: CASE-0002 | status: under_review
+    flagged: True | account: ACC-9003 | alert_id: AL-82e5cd | severity: high | case: CASE-0002 | status: under_review
 11. remember  [ok]
     args: {'kind': 'episodic', 'text': 'Investigated ACC-9003: 6-account cluster (ACC-9002, ACC-9004, ACC-9003, ACC-9100, ACC-9001, ACC-9005), score 41.05. Confirmed same-day mule chain ACC-EXT-01 -> ACC-9001 -> ... -> ACC-9005 -> ACC-9100 through shared devices DEV-9001/DEV-9002; account flagged and case opened.', 'about_ids': ['ACC-9002', 'ACC-9004', 'ACC-9003', 'ACC-9100', 'ACC-9001', 'ACC-9005']}
-    note_id: MEM-da382f24 | kind: episodic | linked_to: 6 items | text: Investigated ACC-9003: 6-account cluster (ACC-9002, ACC-9004, ACC-9003, ACC-9100
+    note_id: MEM-11401f7f | kind: episodic | linked_to: 6 items | text: Investigated ACC-9003: 6-account cluster (ACC-9002, ACC-9004, ACC-9003, ACC-9100
 ```
 
 ## Path through the graph

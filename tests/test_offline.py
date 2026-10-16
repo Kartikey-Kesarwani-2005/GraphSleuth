@@ -16,7 +16,7 @@ from graphsleuth.agent import compose_final  # noqa: E402
 
 
 def test_tool_specs_are_openai_shaped() -> None:
-    assert len(tools.TOOL_SPECS) == 12
+    assert len(tools.TOOL_SPECS) == 20
     for spec in tools.TOOL_SPECS:
         function = spec["function"]
         assert spec["type"] == "function"
@@ -24,6 +24,38 @@ def test_tool_specs_are_openai_shaped() -> None:
         assert function["parameters"]["type"] == "object"
         # every declared tool must have a handler and vice versa
     assert set(tools.HANDLERS) == {s["function"]["name"] for s in tools.TOOL_SPECS}
+
+
+def test_graph_algorithm_and_handoff_tools_registered() -> None:
+    """Track 01/02 requirements are actual agent tools, not hidden helpers."""
+    for name in (
+        "page_rank",
+        "connected_components",
+        "community_detection",
+        "centrality",  # graph algorithms as agent tools
+        "create_handoff",
+        "list_handoffs",
+        "accept_handoff",  # shared state + handoffs between agents
+        "list_alerts",
+    ):
+        assert name in tools.HANDLERS, name
+        assert name in {s["function"]["name"] for s in tools.TOOL_SPECS}
+
+
+def test_multigraph_one_graph_per_tenant() -> None:
+    from graphsleuth import db  # noqa: E402
+
+    assert db.graph_name_for("default") == "graphsleuth:default"
+    assert db.graph_name_for("Acme") == "graphsleuth:acme"  # normalised
+    assert db.graph_name_for("  ") == db.graph_name_for(None)  # fallback to default
+    assert db.graph_name_for("a") != db.graph_name_for("b")  # isolation by topology
+
+
+def test_handoff_tool_validates_roles() -> None:
+    result = tools.execute("create_handoff", {"to_role": "wizard", "context": "hi"})
+    assert "error" in result
+    result = tools.execute("create_handoff", {"to_role": "investigator", "context": "   "})
+    assert "error" in result
 
 
 def test_unknown_tool_returns_error() -> None:

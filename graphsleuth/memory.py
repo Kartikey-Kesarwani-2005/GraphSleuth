@@ -10,6 +10,11 @@ Notes are written with `remember()` and can be linked to any entity in the
 fraud graph (`:ABOUT`), which is what makes recall graph-aware rather than a
 flat vector lookup: the agent can ask "what do I already know about ACC-9003?"
 and follow edges to the note.
+
+Multigraph tenancy: every note/session/case lives in its **tenant's own graph**
+(`graphsleuth:<tenant>`), so memory is isolated by topology — one agent cannot
+read another tenant's notes even with raw Cypher (`run_cypher` runs against the
+active tenant's graph only).
 """
 
 from __future__ import annotations
@@ -30,8 +35,12 @@ def new_session_id() -> str:
     return f"SES-{uuid.uuid4().hex[:8]}"
 
 
-def append_message(session_id: str, role: str, content: str, tenant: str = DEFAULT_TENANT) -> None:
-    """Persist one conversation turn — episodic memory that survives restarts."""
+def append_message(session_id: str, role: str, content: str, tenant: str | None = None) -> None:
+    """Persist one conversation turn — episodic memory that survives restarts.
+
+    `tenant=None` writes into the graph of the active tenant (see `db.tenant_scope`).
+    """
+    tenant = db.resolve_tenant(tenant)
     db.query(
         """
         MERGE (s:Session {id: $sid})
@@ -48,13 +57,16 @@ def append_message(session_id: str, role: str, content: str, tenant: str = DEFAU
             "ts": _now(),
             "tenant": tenant,
         },
+        tenant=tenant,
     )
 
 
-def set_session_summary(session_id: str, summary: str) -> None:
+def set_session_summary(session_id: str, summary: str, tenant: str | None = None) -> None:
+    tenant = db.resolve_tenant(tenant)
     db.query(
         "MATCH (s:Session {id: $sid}) SET s.summary = $summary, s.closed_at = $ts RETURN s.id AS row",
         {"sid": session_id, "summary": summary[:2000], "ts": _now()},
+        tenant=tenant,
     )
 
 
@@ -62,10 +74,11 @@ def remember(
     kind: str,
     text: str,
     about_ids: list[str] | None = None,
-    tenant: str = DEFAULT_TENANT,
+    tenant: str | None = None,
     note_id: str | None = None,
 ) -> dict:
     """Write a memory note, optionally linked to entities in the graph."""
+    tenant = db.resolve_tenant(tenant)
     kind = kind if kind in {"episodic", "semantic", "procedural"} else "semantic"
     note_id = note_id or f"MEM-{uuid.uuid4().hex[:8]}"
 
@@ -76,6 +89,7 @@ def remember(
         RETURN n.id AS row
         """,
         {"id": note_id, "kind": kind, "text": text[:4000], "ts": _now(), "tenant": tenant},
+        tenant=tenant,
     )
 
     linked: list[str] = []
@@ -87,6 +101,7 @@ def remember(
             RETURN e.id AS row
             """,
             {"nid": note_id, "eid": entity_id},
+            tenant=tenant,
         )
         if rows:
             linked.append(entity_id)
@@ -94,8 +109,9 @@ def remember(
     return {"note_id": note_id, "kind": kind, "linked_to": linked, "text": text[:200]}
 
 
-def recall(query_text: str = "", kind: str = "", tenant: str = DEFAULT_TENANT, limit: int = 8) -> list[dict]:
+def recall(query_text: str = "", kind: str = "", tenant: str | None = None, limit: int = 8) -> list[dict]:
     """Search memory notes; `query_text` can be an entity id or free text."""
+    tenant = db.resolve_tenant(tenant)
     rows = db.query(
         """
         MATCH (n:MemoryNote)
@@ -109,6 +125,7 @@ def recall(query_text: str = "", kind: str = "", tenant: str = DEFAULT_TENANT, l
         RETURN [n.id, n.kind, n.text, n.created_at, about] AS row
         """,
         {"q": query_text, "kind": kind, "tenant": tenant, "limit": limit},
+        tenant=tenant,
     )
     return [
         {"note_id": r[0], "kind": r[1], "text": r[2], "created_at": r[3], "about": r[4]}
@@ -116,7 +133,8 @@ def recall(query_text: str = "", kind: str = "", tenant: str = DEFAULT_TENANT, l
     ]
 
 
-def open_cases(tenant: str = DEFAULT_TENANT, limit: int = 5) -> list[dict]:
+def open_cases(tenant: str | None = None, limit: int = 5) -> list[dict]:
+    tenant = db.resolve_tenant(tenant)  # cases live in the tenant's own graph
     rows = db.query(
         """
         MATCH (c:Case)
@@ -127,11 +145,13 @@ def open_cases(tenant: str = DEFAULT_TENANT, limit: int = 5) -> list[dict]:
         RETURN [c.id, c.title, c.created_at, coalesce(c.summary, '')] AS row
         """,
         {"limit": limit},
+        tenant=tenant,
     )
     return [{"case_id": r[0], "title": r[1], "created_at": r[2], "summary": r[3]} for r in rows]
 
 
-def recent_sessions(tenant: str = DEFAULT_TENANT, limit: int = 3) -> list[dict]:
+def recent_sessions(tenant: str | None = None, limit: int = 3) -> list[dict]:
+    tenant = db.resolve_tenant(tenant)
     rows = db.query(
         """
         MATCH (s:Session)
@@ -142,17 +162,19 @@ def recent_sessions(tenant: str = DEFAULT_TENANT, limit: int = 3) -> list[dict]:
         RETURN [s.id, coalesce(s.summary, ''), s.started_at] AS row
         """,
         {"tenant": tenant, "limit": limit},
+        tenant=tenant,
     )
     return [{"session_id": r[0], "summary": r[1], "started_at": r[2]} for r in rows]
 
 
-def context_digest(question: str, tenant: str = DEFAULT_TENANT) -> str:
+def context_digest(question: str, tenant: str | None = None) -> str:
     """Build the memory briefing injected into the agent's system prompt.
 
     This is the "remember across sessions" half of the agent: before it looks at
     a single fraud record it already knows past findings, open cases and the
-    playbook it learned earlier.
+    playbook it learned earlier. Everything comes from the active tenant's graph.
     """
+    tenant = db.resolve_tenant(tenant)
     lines: list[str] = []
 
     cases = open_cases(tenant)

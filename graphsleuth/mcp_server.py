@@ -2,12 +2,16 @@
 
 Any MCP-capable client — Claude Desktop, an IDE agent, another agent in your
 team — can connect to this server and get the whole graph toolbelt: the same
-twelve tools the built-in agent uses, backed by the same FalkorDB graph and the
+twenty tools the built-in agent uses, backed by the same FalkorDB graph and the
 same memory. That is what makes the graph a *shared* context layer rather than
 one agent's private data.
 
 Run it:
     python -m graphsleuth.mcp_server            # stdio transport
+
+Tenancy: the server works against one tenant's graph per process. Pick the
+tenant with GRAPHSLEUTH_TENANT (default: `default`), so a client config gives
+each user/agent its own graph while everything shares one FalkorDB instance.
 
 Client configuration (example for a stdio MCP client):
 
@@ -16,7 +20,11 @@ Client configuration (example for a stdio MCP client):
         "graphsleuth": {
           "command": "<path to>/.venv/Scripts/python.exe",
           "args": ["-m", "graphsleuth.mcp_server"],
-          "env": { "FALKORDB_HOST": "localhost", "FALKORDB_PORT": "6379" }
+          "env": {
+            "FALKORDB_HOST": "localhost",
+            "FALKORDB_PORT": "6379",
+            "GRAPHSLEUTH_TENANT": "default"
+          }
         }
       }
     }
@@ -25,6 +33,7 @@ Client configuration (example for a stdio MCP client):
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 try:
@@ -35,16 +44,23 @@ except ImportError as exc:  # pragma: no cover
         f"Import failed with: {exc}"
     ) from exc
 
+from . import db
 from .tools import HANDLERS
+
+# One MCP server process = one tenant's graph (multigraph per tenant).
+db.set_tenant(os.getenv("GRAPHSLEUTH_TENANT", "") or db.DEFAULT_TENANT)
 
 server = MCPServer(
     name="graphsleuth",
     title="GraphSleuth — fraud investigation graph",
     instructions=(
-        "Fraud investigation tools backed by a FalkorDB graph of accounts, people, devices, "
-        "transactions, alerts, cases and long-term agent memory. Start with entity_search or "
-        "recall, follow connections with graph_neighbors / trace_money_flow / find_shared_links, "
-        "and use run_cypher for anything else (read-only)."
+        f"Fraud investigation tools backed by tenant '{db.resolve_tenant()}' "
+        f"(graph '{db.graph_name_for(db.resolve_tenant())}') in FalkorDB: accounts, people, "
+        "devices, transactions, alerts, cases, agent handoffs and long-term agent memory. "
+        "Start with entity_search or recall, follow connections with graph_neighbors / "
+        "trace_money_flow / find_shared_links, rank with page_rank / centrality / "
+        "connected_components / community_detection, hand work over with create_handoff / "
+        "list_handoffs / accept_handoff, and use run_cypher for anything else (read-only)."
     ),
 )
 
@@ -113,6 +129,59 @@ def remember(kind: str, text: str, about_ids: list[str] | None = None) -> str:
 @server.tool(description="Read long-term memory (earlier findings, playbooks, open cases).")
 def recall(query: str = "", kind: str = "") -> str:
     return _call("recall", query=query, kind=kind)
+
+
+@server.tool(description="PageRank: which entities sit at the centre of the flow through the graph.")
+def page_rank(top: int = 10, label: str = "") -> str:
+    return _call("page_rank", top=top, label=label)
+
+
+@server.tool(description="Weakly connected components (algo.WCC): which parts of the graph are separate islands?")
+def connected_components(top: int = 8, min_size: int = 2) -> str:
+    return _call("connected_components", top=top, min_size=min_size)
+
+
+@server.tool(description="Label propagation: dense communities in the graph — who clusters with whom.")
+def community_detection(top: int = 8, min_size: int = 2) -> str:
+    return _call("community_detection", top=top, min_size=min_size)
+
+
+@server.tool(description="Centrality: betweenness (bridges) or harmonic (closest to everyone) via FalkorDB.")
+def centrality(kind: str = "betweenness", top: int = 10, label: str = "") -> str:
+    return _call("centrality", kind=kind, top=top, label=label)
+
+
+@server.tool(description="Read the alert queue: accounts flagged before, newest first.")
+def list_alerts(status: str = "", severity: str = "", limit: int = 10) -> str:
+    return _call("list_alerts", status=status, severity=severity, limit=limit)
+
+
+@server.tool(description="ACTION: hand the investigation to another agent — writes a Handoff node into the shared graph.")
+def create_handoff(
+    to_role: str,
+    context: str,
+    from_role: str = "",
+    case_id: str = "",
+    entity_ids: list[str] | None = None,
+) -> str:
+    return _call(
+        "create_handoff",
+        to_role=to_role,
+        context=context,
+        from_role=from_role,
+        case_id=case_id,
+        entity_ids=entity_ids or [],
+    )
+
+
+@server.tool(description="Read handoffs waiting to be picked up (default status=pending), with case and entities.")
+def list_handoffs(status: str = "pending", limit: int = 5) -> str:
+    return _call("list_handoffs", status=status, limit=limit)
+
+
+@server.tool(description="ACTION: claim a handoff — marks it accepted and returns the full context.")
+def accept_handoff(handoff_id: str) -> str:
+    return _call("accept_handoff", handoff_id=handoff_id)
 
 
 def main() -> None:
