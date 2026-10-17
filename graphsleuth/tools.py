@@ -776,7 +776,7 @@ def list_alerts(status: str = "", severity: str = "", limit: int = 10) -> dict:
 # --------------------------------------------------------------------------- #
 # multi-agent handoffs — state shared between agents through the graph
 # --------------------------------------------------------------------------- #
-HANDOFF_ROLES = {"triage", "investigator", "analyst"}
+HANDOFF_ROLES = {"triage", "investigator", "analyst", "verifier"}
 
 
 def create_handoff(

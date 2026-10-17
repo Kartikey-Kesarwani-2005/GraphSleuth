@@ -3,9 +3,10 @@
     python -m graphsleuth status                    # FalkorDB + multigraph + LLM check
     python -m graphsleuth seed [--tenant acme]      # build the synthetic fraud graph
     python -m graphsleuth demo [--target ACC-9003] [--save report.md]
-    python -m graphsleuth pipeline [--target ACC-9003]   # triage -> handoff -> investigator
+    python -m graphsleuth pipeline [--target ACC-9003] [--verify]   # triage -> handoff -> investigator [-> verifier]
     python -m graphsleuth bench [--writers 4 --readers 16]
     python -m graphsleuth chat [--tenant acme] [--session SES-1234]
+    python -m graphsleuth serve [--port 8765]          # interactive web console
 """
 
 from __future__ import annotations
@@ -85,6 +86,7 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
         verbose=not args.quiet,
         offline=args.offline,
         model=args.model,
+        verify=args.verify,
     )
     print("\n" + "=" * 78)
     print("TRIAGE")
@@ -100,11 +102,61 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
     print("INVESTIGATOR")
     print("=" * 78)
     print(result["investigation"]["answer"])
+    if result.get("verification"):
+        print("\n" + "=" * 78)
+        print("VERIFIER (independent re-check)")
+        print("=" * 78)
+        print(result["verification"]["answer"])
     if args.save:
         path = Path(args.save)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(pipeline_markdown(result), encoding="utf-8")
         print(f"\nSaved pipeline report to {path}")
+    return 0
+
+
+def cmd_eval(args: argparse.Namespace) -> int:
+    from . import evaluate
+
+    report = evaluate.run(tenant=args.tenant)
+    print(evaluate.render(report))
+    if args.save:
+        path = Path(args.save)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(f"Saved scorecard to {path}")
+    return 0 if report["passed"] == report["total"] else 1
+
+
+def cmd_memory(args: argparse.Namespace) -> int:
+    db.set_tenant(args.tenant)
+    tenant = db.resolve_tenant()
+    books = memory.playbooks(tenant, limit=args.limit)
+    notes = memory.recall("", args.kind, tenant, limit=args.limit)
+    cases = memory.open_cases(tenant, limit=args.limit)
+
+    print(f"Memory — tenant '{tenant}' (graph '{db.graph_name_for(tenant)}')")
+    print("\nPROCEDURAL — learned playbooks")
+    if books:
+        for book in books:
+            print(f"  * {book['note_id']}  {book['text'][:160]}")
+    else:
+        print("  (none yet — run an investigation to learn one)")
+
+    print(f"\nNOTES — durable memory{' (kind=' + args.kind + ')' if args.kind else ''}")
+    if notes:
+        for note in notes:
+            about = f" -> {', '.join(note['about'])}" if note["about"] else ""
+            print(f"  * [{note['kind']}] {note['note_id']}  {note['text'][:140]}{about}")
+    else:
+        print("  (none)")
+
+    print("\nOPEN CASES")
+    if cases:
+        for case in cases:
+            print(f"  * {case['case_id']} | {case['title']} | {case['summary'][:120]}")
+    else:
+        print("  (none)")
     return 0
 
 
@@ -118,6 +170,13 @@ def cmd_bench(args: argparse.Namespace) -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"Saved raw numbers to {path}")
+    return 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    from .server import serve
+
+    serve(host=args.host, port=args.port)
     return 0
 
 
@@ -174,6 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_pipe.add_argument("--save", default="", help="write the combined markdown report here")
     p_pipe.add_argument("--quiet", action="store_true", help="hide per-tool-call logs")
     p_pipe.add_argument("--offline", action="store_true", help="force the scripted fallback brains")
+    p_pipe.add_argument("--verify", action="store_true", help="add a third adversarial agent that re-checks the verdict")
     p_pipe.add_argument("--model", default=None, help="pin the live brain to one model (skip the fallback chain)")
     p_pipe.set_defaults(func=cmd_pipeline)
 
@@ -185,11 +245,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_bench.add_argument("--save", default="", help="write raw JSON numbers here")
     p_bench.set_defaults(func=cmd_bench)
 
+    p_mem = sub.add_parser("memory", help="inspect agent memory: playbooks, notes, open cases")
+    p_mem.add_argument("--tenant", default=memory.DEFAULT_TENANT)
+    p_mem.add_argument("--kind", default="", help="filter notes: episodic | semantic | procedural")
+    p_mem.add_argument("--limit", type=int, default=10)
+    p_mem.set_defaults(func=cmd_memory)
+
+    p_eval = sub.add_parser("eval", help="run the reproducible evaluation scorecard")
+    p_eval.add_argument("--tenant", default=memory.DEFAULT_TENANT)
+    p_eval.add_argument("--save", default="", help="write the scorecard JSON here")
+    p_eval.set_defaults(func=cmd_eval)
+
     p_chat = sub.add_parser("chat", help="interactive investigation session")
     p_chat.add_argument("--tenant", default=memory.DEFAULT_TENANT)
     p_chat.add_argument("--session", default=None, help="reuse an existing session id")
     p_chat.add_argument("--model", default=None, help="pin the live brain to one model (skip the fallback chain)")
     p_chat.set_defaults(func=cmd_chat)
+
+    p_serve = sub.add_parser("serve", help="interactive web console: stream the investigation + graph")
+    p_serve.add_argument("--host", default="127.0.0.1", help="bind address (default localhost only)")
+    p_serve.add_argument("--port", type=int, default=8765)
+    p_serve.set_defaults(func=cmd_serve)
 
     return parser
 

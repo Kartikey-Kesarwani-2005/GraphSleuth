@@ -82,6 +82,7 @@ class GraphSleuth:
         max_rounds: int | None = None,
         scripted: Any = None,
         model: str | None = None,
+        on_event: Any = None,
     ) -> None:
         self.tenant = tenant
         self.session_id = session_id or memory.new_session_id()
@@ -93,6 +94,7 @@ class GraphSleuth:
         self._brain_override = brain
         self._scripted = scripted
         self._model = model
+        self._on_event = on_event
 
     # -- internals ---------------------------------------------------------- #
     def _brain(self):
@@ -105,6 +107,39 @@ class GraphSleuth:
     def _log(self, message: str) -> None:
         if self.verbose:
             print(message)
+
+    def _emit(self, event: dict) -> None:
+        """Publish a live event to an optional listener (the web UI / SSE stream).
+
+        A broken listener must never break an investigation, so failures are
+        swallowed. Events are: `start`, `tool_call`, `tool_result`, `skipped`,
+        `answer`.
+        """
+        if self._on_event is None:
+            return
+        try:
+            self._on_event(event)
+        except Exception:  # noqa: BLE001 - listeners are best-effort telemetry
+            pass
+
+    def _learn_playbook(self, question: str) -> None:
+        """Distil this investigation into procedural memory (a reusable playbook).
+
+        Only substantial investigations teach: a 1-2 tool lookup is not a
+        procedure. Identical tool sequences are de-duplicated, and the tenant
+        keeps at most `memory.save_playbook` playbooks, so memory stays useful
+        instead of becoming a log.
+        """
+        try:
+            playbook = memory.distill_playbook(self.history, question, self.tenant)
+            if not playbook or memory.playbook_exists(playbook["signature"], self.tenant):
+                return
+            saved = memory.save_playbook(playbook, self.tenant)
+            if saved.get("saved"):
+                self._emit({"type": "learned", "playbook": saved})
+                self._log(f"  [memory] learned playbook {saved['note_id']}: {playbook['signature']}")
+        except Exception:  # noqa: BLE001 - learning must never fail an investigation
+            pass
 
     def _briefing(self, question: str) -> str:
         digest = memory.context_digest(question, self.tenant)
@@ -162,6 +197,16 @@ class GraphSleuth:
             {"role": "user", "content": question},
         ]
         brain = self._brain()
+        self._emit(
+            {
+                "type": "start",
+                "question": question,
+                "session_id": self.session_id,
+                "tenant": self.tenant,
+                "role": self.role,
+                "provider": getattr(brain, "provider", "offline fallback"),
+            }
+        )
         answer: str | None = None
         rounds = 0
         seen_calls: set[str] = set()
@@ -179,11 +224,20 @@ class GraphSleuth:
             if response.tool_calls:
                 for call in response.tool_calls:
                     self._log(f"  [{rounds}] {call.name}({_short_args(call.arguments)})")
+                    self._emit(
+                        {
+                            "type": "tool_call",
+                            "round": rounds,
+                            "tool": call.name,
+                            "arguments": call.arguments,
+                        }
+                    )
                     signature = f"{call.name}:{json.dumps(call.arguments, sort_keys=True, default=str)}"
                     if signature in seen_calls:
                         # Same tool, same arguments, again: don't pay for it twice
                         # (free tiers cap tokens) and nudge the model to move on.
                         self._log("      -> (duplicate call skipped)")
+                        self._emit({"type": "skipped", "round": rounds, "tool": call.name})
                         content = json.dumps(
                             {
                                 "note": "duplicate call skipped — you already have this exact "
@@ -198,6 +252,16 @@ class GraphSleuth:
                             {"tool": call.name, "arguments": call.arguments, "result": result}
                         )
                         self._log(f"      -> {_summarise_result(result)}")
+                        self._emit(
+                            {
+                                "type": "tool_result",
+                                "round": rounds,
+                                "tool": call.name,
+                                "arguments": call.arguments,
+                                "result": result,
+                                "summary": _summarise_result(result),
+                            }
+                        )
                         content = json.dumps(result, default=str, ensure_ascii=False)[:1200]
                     messages.append(
                         {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": content}
@@ -217,8 +281,9 @@ class GraphSleuth:
 
         memory.append_message(self.session_id, "assistant", answer, self.tenant)
         memory.set_session_summary(self.session_id, answer[:600])
+        self._learn_playbook(question)
 
-        return {
+        result = {
             "question": question,
             "answer": answer,
             "trace": self.history,
@@ -229,6 +294,8 @@ class GraphSleuth:
             "brain": "live" if getattr(brain, "provider", None) else "offline-scripted",
             "provider": getattr(brain, "provider", "offline fallback"),
         }
+        self._emit({"type": "answer", "answer": answer, "rounds": rounds})
+        return result
 
 
 def _short_args(arguments: dict) -> str:

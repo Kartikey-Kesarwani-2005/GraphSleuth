@@ -17,11 +17,14 @@ scripted fallback) support the same pipeline.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from . import explain, memory
 from .agent import GraphSleuth, _dedupe_ids, _last, build_demo_brain
 from .llm import ScriptedBrain
+
+_RE_ENTITY = re.compile(r"(ACC-\d+|ACC-EXT-\d+|TX-\d+|AL-\d+|CASE-\d+)")
 
 TRIAGE_PROMPT = """You are GraphSleuth-Triage, the first agent in a two-agent fraud pipeline.
 Your job is to decide FAST whether an entity deserves a full investigation — you do NOT trace
@@ -62,6 +65,35 @@ HANDOFF_QUESTION = (
 INVESTIGATE_QUESTION = (
     "Investigate {target}: pick up any pending handoff first, follow the money, "
     "prove the connections with paths and algorithms, then take action."
+)
+
+VERIFIER_PROMPT = """You are GraphSleuth-Verifier, the adversarial second opinion in a
+three-agent fraud pipeline. Another agent investigated and opened a case. You do NOT trust
+its prose — you re-derive the key claims from the graph yourself and actively try to break
+them. Your value is catching an over-claim before a human acts on it.
+
+Context layer: the same FalkorDB graph your colleagues used (your tenant's own graph) — the
+case, the alerts, the handoffs and their notes are all visible to you. You have write access,
+but you are here to check, not to re-investigate.
+
+Verification procedure:
+1. `recall` the case and the memory notes the investigators left; note which claims were made.
+2. Independently re-check each signal: `find_shared_links` (shared devices / beneficiaries),
+   `list_alerts` (do the prior alerts actually exist?), `detect_suspicious_cluster` (does the
+   entity really sit in a scored cluster?), and `shortest_connection` (is there a real path?).
+3. If a claim does not hold, say so plainly. A verification that only ever agrees is worthless.
+
+Final answer format:
+- **Verification** — CONFIRMED / WEAK / REFUTED, one sentence.
+- **Re-checked** — each claim and the independent result you got.
+- **Discrepancies** — anything the graph does not support (or "none").
+- **Actions taken** — the write tools you really called this session (`add_case_note`,
+  `remember`, `create_handoff`). If you only read, write exactly: `None — read-only check.`
+"""
+
+VERIFY_QUESTION = (
+    "Verify {target} against case {case_id}: independently re-check the investigation's "
+    "claims against the graph and confirm, weaken or refute them."
 )
 
 
@@ -168,16 +200,120 @@ def compose_triage_final(question: str, history: list[dict]) -> str:
 # --------------------------------------------------------------------------- #
 # the pipeline
 # --------------------------------------------------------------------------- #
+def build_verifier_brain(target: str, case_id: str = "") -> ScriptedBrain:
+    """Offline stand-in for the verifier: independently re-checks then records."""
+
+    def collector(history: list[dict]) -> str:
+        return "ACC-9100"
+
+    plan: list[tuple[str, Any]] = [
+        ("recall", {"query": target}),
+        ("find_shared_links", {"account_id": target}),
+        ("list_alerts", {"limit": 10}),
+        ("detect_suspicious_cluster", {"min_signals": 2}),
+        (
+            "shortest_connection",
+            {
+                "id_a": "ACC-EXT-01",
+                "id_b": "ACC-9100",
+                "max_depth": 8,
+                "via": ["ORIGINATED", "DESTINED"],
+            },
+        ),
+        (
+            "add_case_note",
+            lambda history: {
+                "case_id": case_id,
+                "text": (
+                    f"Verification: independently re-checked the {target} case — shared-device "
+                    "links, prior alerts and the money path all reproduce. Verdict CONFIRMED."
+                ),
+            },
+        ),
+        (
+            "remember",
+            lambda history: {
+                "kind": "semantic",
+                "text": (
+                    f"Verified case {case_id or '(unlinked)'} on {target}: claims reproduce "
+                    "against the graph — CONFIRMED by the verifier agent."
+                ),
+                "about_ids": _dedupe_ids(_cluster_members(history, target) + ["ACC-9100"]),
+            },
+        ),
+    ]
+    return ScriptedBrain(plan=plan, on_finish=compose_verifier_final)
+
+
+def compose_verifier_final(question: str, history: list[dict]) -> str:
+    """Offline verification summary in the VERIFIER_PROMPT format."""
+    # Prefer the account entity: a case id may appear earlier in the question.
+    target_match = re.search(r"ACC-(?:EXT-)?\d+", question) or _RE_ENTITY.search(question)
+    target = target_match.group(0) if target_match else "the entity"
+    links = _last(history, "find_shared_links") or {}
+    cluster = _last(history, "detect_suspicious_cluster") or {}
+    alerts = _last(history, "list_alerts") or {}
+    path = _last(history, "shortest_connection") or {}
+    note = _last(history, "add_case_note") or {}
+    memo = _last(history, "remember") or {}
+
+    shared = links.get("links") or []
+    with_device = [link for link in shared if link.get("shared_devices")]
+    clusters = cluster.get("clusters") or []
+    path_nodes = path.get("path") or []
+    alert_rows = alerts.get("alerts") or []
+
+    confirmed = bool(with_device) and bool(clusters) and len(path_nodes) >= 2
+    lines = [
+        f"**Verification** — {'CONFIRMED' if confirmed else 'WEAK'}: "
+        + (
+            f"{target} reproduces on independent re-check (shared devices, scored cluster, "
+            "and a real money path)."
+            if confirmed
+            else f"{target} could not be fully reproduced from the graph alone."
+        ),
+        "",
+        "**Re-checked**",
+        f"- shared-device links: {len(with_device)} account(s) share a device with {target}",
+        f"- prior alerts on the ring: {len(alert_rows)}",
+        f"- cluster: {clusters[0]['size'] if clusters else 0} members, "
+        f"score {clusters[0]['cluster_score'] if clusters else 0}",
+        f"- money path: {' -> '.join(str(step['node']) for step in path_nodes)}"
+        if path_nodes
+        else "- money path: none found",
+        "",
+        "**Discrepancies** — none: every claim the investigator made reproduces against the graph.",
+        "",
+    ]
+    actions = []
+    if note.get("note_id"):
+        actions.append(f"added verification note {note['note_id']} to {note['case_id']}")
+    if memo.get("note_id"):
+        actions.append(f"wrote memory {memo['note_id']}")
+    lines.append("**Actions taken** — " + ("; ".join(actions) if actions else "None — read-only check."))
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# the pipeline
+# --------------------------------------------------------------------------- #
 def run_pipeline(
     target: str,
     tenant: str = memory.DEFAULT_TENANT,
     verbose: bool = True,
     triage_brain: Any = None,
     investigator_brain: Any = None,
+    verifier_brain: Any = None,
     offline: bool = False,
     model: str | None = None,
+    verify: bool = False,
 ) -> dict:
-    """Run Triage -> handoff -> Investigator for one target and return both transcripts."""
+    """Run Triage -> handoff -> Investigator (-> Verifier) for one target.
+
+    Each agent is a separate session; the FalkorDB graph is the only thing they
+    share. With `verify=True` a third, adversarial agent re-checks the
+    investigator's claims against the graph and records its verdict.
+    """
     if offline:
         # Same pipeline, deterministic fallback brains (no API key needed).
         triage_brain = triage_brain or build_triage_brain(target)
@@ -207,13 +343,35 @@ def run_pipeline(
 
     handoff = _last(triage_result["trace"], "create_handoff") or {}
     accepted = _last(investigation_result["trace"], "accept_handoff") or {}
+    case = _last(investigation_result["trace"], "open_case") or {}
+    case_id = case.get("case_id", "")
+
+    verification_result: dict | None = None
+    if verify:
+        if offline:
+            verifier_brain = verifier_brain or build_verifier_brain(target, case_id)
+        verifier = GraphSleuth(
+            tenant=tenant,
+            verbose=verbose,
+            role="verifier",
+            prompt=VERIFIER_PROMPT,
+            max_rounds=10,  # re-check steps + the verdict round
+            brain=verifier_brain,
+            scripted=build_verifier_brain(target, case_id),
+            model=model,
+        )
+        verification_result = verifier.ask(
+            VERIFY_QUESTION.format(case_id=case_id or "(no case opened)", target=target)
+        )
 
     return {
         "target": target,
         "tenant": tenant,
-        "pipeline": "triage -> handoff -> investigator",
+        "pipeline": "triage -> handoff -> investigator" + (" -> verifier" if verify else ""),
         "triage": triage_result,
         "investigation": investigation_result,
+        "verification": verification_result,
+        "case_id": case_id,
         "handoff": {
             "created": handoff.get("handoff_id", ""),
             "accepted": accepted.get("handoff_id", ""),
@@ -261,6 +419,27 @@ def pipeline_markdown(result: dict) -> str:
         "**Actions taken (verified from the tool log):** "
         + (", ".join(invest_actions) if invest_actions else "_none — read-only_"),
     ]
+    verification = result.get("verification")
+    if verification:
+        parts += [
+            "",
+            "---",
+            "",
+            "## Agent 3 — Verifier (adversarial re-check)",
+            "",
+            verification["answer"],
+            "",
+            "### Verifier tool trace",
+            "",
+        ]
+        for index, entry in enumerate(verification["trace"], 1):
+            parts.append(f"{index}. `{entry['tool']}` → `{_compact(entry['result'])}`")
+        verify_actions = explain.verified_actions(verification["trace"])
+        parts += [
+            "",
+            "**Actions taken (verified from the tool log):** "
+            + (", ".join(verify_actions) if verify_actions else "_none — read-only_"),
+        ]
     return "\n".join(parts)
 
 

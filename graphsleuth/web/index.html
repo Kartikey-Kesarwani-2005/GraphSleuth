@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GraphSleuth — investigation console</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">◈</span>
+      <div>
+        <strong>GraphSleuth</strong>
+        <small>context layer: FalkorDB · agent chooses its own tools</small>
+      </div>
+    </div>
+    <div id="status" class="status">connecting…</div>
+  </header>
+
+  <main>
+    <section class="left">
+      <form id="controls">
+        <input id="target" value="ACC-9003" spellcheck="false" aria-label="target entity" />
+        <input id="tenant" value="default" spellcheck="false" aria-label="tenant" />
+        <label class="chk"><input type="checkbox" id="offline" /> offline</label>
+        <button type="submit">Investigate</button>
+      </form>
+
+      <div id="verdict" class="card verdict hidden"></div>
+
+      <div class="card">
+        <h2>Live reasoning <span id="rounds" class="pill"></span></h2>
+        <ol id="steps" class="steps"></ol>
+        <p id="empty" class="muted">Press <em>Investigate</em> — the agent streams every tool call here.</p>
+      </div>
+
+      <div class="card">
+        <h2>Memory &amp; open cases <small id="memtenant" class="muted"></small></h2>
+        <div id="memlist" class="memlist"></div>
+      </div>
+    </section>
+
+    <section class="right">
+      <canvas id="graph"></canvas>
+      <div class="legend">
+        <span><i class="dot focal"></i>focus</span>
+        <span><i class="dot ring"></i>ring</span>
+        <span><i class="dot Account"></i>Account</span>
+        <span><i class="dot Device"></i>Device</span>
+        <span><i class="dot Transaction"></i>Transaction</span>
+        <span><i class="dot Alert"></i>Alert</span>
+        <span class="hint">drag to pan · scroll to zoom</span>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -49,48 +49,73 @@ def collect_graph_facts(trace: list[dict]) -> tuple[dict[str, str], list[tuple[s
     """Extract nodes and typed edges from tool results for diagramming."""
     nodes: dict[str, str] = {}
     edges: list[tuple[str, str, str]] = []
+    for entry in trace:
+        _facts_into(entry, nodes, edges)
+    return nodes, _dedupe(edges)
 
+
+def facts_from_entry(entry: dict) -> tuple[dict[str, str], list[tuple[str, str, str]]]:
+    """Nodes and edges contributed by a single tool call.
+
+    Used by the web UI to grow the graph live as the agent investigates.
+    """
+    nodes: dict[str, str] = {}
+    edges: list[tuple[str, str, str]] = []
+    _facts_into(entry, nodes, edges)
+    return nodes, edges
+
+
+def _facts_into(entry: dict, nodes: dict[str, str], edges: list[tuple[str, str, str]]) -> None:
     def add_node(node_id: str, label: str = "") -> None:
         if node_id:
             nodes.setdefault(node_id, label or node_id.split("-")[0])
 
-    for entry in trace:
-        tool, result = entry.get("tool"), entry.get("result")
-        if not isinstance(result, dict):
-            continue
+    tool, result = entry.get("tool"), entry.get("result")
+    if not isinstance(result, dict):
+        return
 
-        if tool == "graph_neighbors":
-            for node in result.get("nodes", []) or []:
-                if isinstance(node, dict):
-                    labels = node.get("labels") or []
-                    add_node(str(node.get("id")), labels[0] if labels else "")
-            for edge in result.get("edges", []) or []:
-                if isinstance(edge, dict):
-                    add_node(str(edge.get("from")))
-                    add_node(str(edge.get("to")))
-                    edges.append((str(edge.get("from")), str(edge.get("to")), str(edge.get("type"))))
+    if tool == "graph_neighbors":
+        add_node(str(result.get("start") or ""))
+        for node in result.get("nodes", []) or []:
+            if isinstance(node, dict):
+                labels = node.get("labels") or []
+                add_node(str(node.get("id")), labels[0] if labels else "")
+        for edge in result.get("edges", []) or []:
+            if isinstance(edge, dict):
+                add_node(str(edge.get("from")))
+                add_node(str(edge.get("to")))
+                edges.append((str(edge.get("from")), str(edge.get("to")), str(edge.get("type"))))
 
-        elif tool == "trace_money_flow":
-            for direction in ("outgoing", "incoming"):
-                for level in (result.get(direction) or {}).get("levels", []) or []:
-                    for hop in level.get("hops", []) or []:
-                        add_node(str(hop.get("from")), "Account")
-                        add_node(str(hop.get("to")), "Account")
-                        edges.append((str(hop.get("from")), str(hop.get("to")), str(hop.get("tx"))))
+    elif tool == "trace_money_flow":
+        for direction in ("outgoing", "incoming"):
+            for level in (result.get(direction) or {}).get("levels", []) or []:
+                for hop in level.get("hops", []) or []:
+                    add_node(str(hop.get("from")), "Account")
+                    add_node(str(hop.get("to")), "Account")
+                    edges.append((str(hop.get("from")), str(hop.get("to")), str(hop.get("tx"))))
 
-        elif tool == "shortest_connection":
-            path = result.get("path") or []
-            for step in path:
-                add_node(str(step.get("node")))
-            for previous, step in zip(path, path[1:]):
-                edges.append((str(previous.get("node")), str(step.get("node")), str(step.get("via"))))
+    elif tool == "find_shared_links":
+        add_node(str(result.get("account") or ""), "Account")
+        for link in result.get("links", []) or []:
+            account = str(link.get("account") or "")
+            add_node(account, "Account")
+            for device in link.get("shared_devices") or []:
+                add_node(str(device), "Device")
+                edges.append((account, str(device), "SHARED_DEVICE"))
 
-        elif tool == "detect_suspicious_cluster":
-            for cluster in result.get("clusters", []) or []:
-                for member in cluster.get("members", []) or []:
-                    add_node(str(member.get("account")), "Account")
+    elif tool == "shortest_connection":
+        path = result.get("path") or []
+        for step in path:
+            add_node(str(step.get("node")))
+        for previous, step in zip(path, path[1:]):
+            edges.append((str(previous.get("node")), str(step.get("node")), str(step.get("via"))))
 
-    return nodes, _dedupe(edges)
+    elif tool == "detect_suspicious_cluster":
+        for cluster in result.get("clusters", []) or []:
+            for member in cluster.get("members", []) or []:
+                account = str(member.get("account") or "")
+                add_node(account, "Account")
+
 
 
 def _short(value: Any) -> str:

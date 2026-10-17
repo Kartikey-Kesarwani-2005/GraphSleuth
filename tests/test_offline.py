@@ -301,6 +301,98 @@ def test_livebrain_walks_fallback_on_daily_cap() -> None:
             os.environ["LLM_MODELS"] = saved_env
 
 
+def test_distill_playbook_orders_tools_and_drops_bookkeeping() -> None:
+    from graphsleuth import memory
+
+    trace = [
+        {"tool": "recall", "arguments": {}, "result": {}},
+        {"tool": "recall", "arguments": {}, "result": {}},   # repeated -> collapse
+        {"tool": "entity_search", "arguments": {"query": "ACC-9003"}, "result": {}},
+        {"tool": "trace_money_flow", "arguments": {"account_id": "ACC-9003"}, "result": {}},
+        {"tool": "remember", "arguments": {}, "result": {}},  # bookkeeping -> dropped
+        {"tool": "flag_account", "arguments": {"account_id": "ACC-9003"}, "result": {}},
+    ]
+    playbook = memory.distill_playbook(trace, "investigate ACC-9003")
+    assert playbook is not None
+    assert playbook["steps"] == ["recall", "entity_search", "trace_money_flow", "flag_account"]
+    assert " > " in playbook["signature"]
+    assert "ACC-9003" in playbook["entities"]
+    # too few tools is not a procedure
+    assert memory.distill_playbook([{"tool": "recall", "arguments": {}, "result": {}}]) is None
+    assert memory.distill_playbook([]) is None
+
+
+def test_facts_from_entry_extracts_nodes_and_edges() -> None:
+    from graphsleuth import explain
+
+    nodes, edges = explain.facts_from_entry(
+        {
+            "tool": "find_shared_links",
+            "arguments": {},
+            "result": {
+                "account": "ACC-9003",
+                "links": [{"account": "ACC-9002", "shared_devices": ["DEV-9001"], "shared_beneficiaries": []}],
+            },
+        }
+    )
+    assert {"ACC-9003", "ACC-9002", "DEV-9001"} <= set(nodes)
+    assert ("ACC-9002", "DEV-9001", "SHARED_DEVICE") in edges
+
+    nodes2, edges2 = explain.facts_from_entry(
+        {"tool": "trace_money_flow", "arguments": {}, "result": {"outgoing": {"levels": [{"hops": [{"from": "ACC-9001", "to": "ACC-9002", "tx": "TX-9001"}]}]}, "incoming": {"levels": []}}}
+    )
+    assert {"ACC-9001", "ACC-9002"} <= set(nodes2)
+    assert ("ACC-9001", "ACC-9002", "TX-9001") in edges2
+
+
+def test_web_console_assets_are_shipped() -> None:
+    from graphsleuth import server
+
+    assert (server.WEB_DIR / "index.html").exists()
+    assert (server.WEB_DIR / "app.js").exists()
+    assert (server.WEB_DIR / "app.css").exists()
+
+
+def test_eval_scorecard_is_registered_and_renders() -> None:
+    from graphsleuth import evaluate
+
+    assert len(evaluate.CHECKS) >= 10
+    names = [name for name, _ in evaluate.CHECKS]
+    assert "mule ring detected" in names and "tenant isolation" in names
+    # render() is pure: build a fake report and check the table + score line
+    fake = {
+        "tenant": "default",
+        "checks": [
+            {"check": "mule ring detected", "passed": True, "detail": "6/6"},
+            {"check": "tenant isolation", "passed": False, "detail": "leak"},
+        ],
+        "passed": 1,
+        "total": 2,
+        "score": 50,
+    }
+    out = evaluate.render(fake)
+    assert "[PASS] mule ring detected" in out and "[FAIL] tenant isolation" in out
+    assert "1/2 checks passed (50%)" in out
+
+
+def test_compose_verifier_final_reports_independently() -> None:
+    from graphsleuth.agents import compose_verifier_final
+
+    history = [
+        {"tool": "find_shared_links", "arguments": {}, "result": {"links": [{"account": "ACC-9002", "shared_devices": ["DEV-9001"], "shared_beneficiaries": []}]}},
+        {"tool": "detect_suspicious_cluster", "arguments": {}, "result": {"clusters": [{"size": 6, "cluster_score": 41.05, "members": [{"account": "ACC-9003"}]}]}},
+        {"tool": "list_alerts", "arguments": {}, "result": {"alerts": [{"alert": "AL-9001"}, {"alert": "AL-9002"}]}},
+        {"tool": "shortest_connection", "arguments": {}, "result": {"path": [{"node": "ACC-EXT-01"}, {"node": "ACC-9001"}, {"node": "ACC-9003"}]}},
+        {"tool": "add_case_note", "arguments": {}, "result": {"note_id": "NOTE-1", "case_id": "CASE-0001"}},
+        {"tool": "remember", "arguments": {}, "result": {"note_id": "MEM-1", "linked_to": []}},
+    ]
+    text = compose_verifier_final("Verify ACC-9003 against case CASE-0001: re-check", history)
+    assert "**Verification** — CONFIRMED" in text
+    assert "ACC-9003" in text
+    assert "**Re-checked**" in text and "**Discrepancies**" in text
+    assert "NOTE-1" in text and "MEM-1" in text
+
+
 if __name__ == "__main__":
     failures = 0
     for name, function in sorted(globals().items()):

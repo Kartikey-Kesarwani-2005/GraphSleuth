@@ -133,6 +133,143 @@ def recall(query_text: str = "", kind: str = "", tenant: str | None = None, limi
     ]
 
 
+# --------------------------------------------------------------------------- #
+# procedural memory: learned playbooks
+# --------------------------------------------------------------------------- #
+def distill_playbook(trace: list[dict], question: str = "", tenant: str | None = None) -> dict | None:
+    """Turn a finished investigation into a reusable procedure.
+
+    Procedural memory = *how* the agent worked, not what it found. We keep the
+    ordered sequence of tools that actually produced a verdict, plus the entities
+    they touched, so a later session gets a head start instead of rediscovering
+    the routine. Bookkeeping tools (`remember`) are dropped: they record, they do
+    not investigate.
+    """
+    if not trace:
+        return None
+    steps: list[str] = []
+    for entry in trace:
+        name = entry.get("tool")
+        if not name or name in {"remember"}:
+            continue
+        if not steps or steps[-1] != name:
+            steps.append(name)
+    if len(steps) < 4:  # a one- or two-tool lookup is not a procedure worth keeping
+        return None
+    entities = _entities_from_trace(trace)
+    signature = " > ".join(steps)
+    return {
+        "steps": steps,
+        "signature": signature,
+        "question": question[:200],
+        "entities": entities,
+        "text": (
+            f"Playbook: {signature}. Learned from an investigation that produced a verdict"
+            + (f" ({question[:120]})" if question else "")
+            + (f". First entities: {', '.join(entities[:6])}." if entities else "")
+        ),
+    }
+
+
+def playbook_exists(signature: str, tenant: str | None = None) -> bool:
+    tenant = db.resolve_tenant(tenant)
+    rows = db.query(
+        "MATCH (n:MemoryNote {kind: 'procedural'}) WHERE n.signature = $sig RETURN n.id AS row LIMIT 1",
+        {"sig": signature},
+        tenant=tenant,
+    )
+    return bool(rows)
+
+
+def count_playbooks(tenant: str | None = None) -> int:
+    tenant = db.resolve_tenant(tenant)
+    rows = db.query(
+        "MATCH (n:MemoryNote {kind: 'procedural'}) RETURN count(n) AS row",
+        tenant=tenant,
+    )
+    return int(rows[0]) if rows else 0
+
+
+def save_playbook(playbook: dict, tenant: str | None = None, max_playbooks: int = 12) -> dict:
+    """Persist a distilled playbook as procedural memory, linked to its entities."""
+    tenant = db.resolve_tenant(tenant)
+    if count_playbooks(tenant) >= max_playbooks:
+        return {"saved": False, "reason": f"playbook cap ({max_playbooks}) reached"}
+    note_id = f"MEM-{uuid.uuid4().hex[:8]}"
+    db.query(
+        """
+        MERGE (n:MemoryNote {id: $id})
+        ON CREATE SET n.kind = 'procedural', n.text = $text, n.signature = $sig,
+                      n.steps = $steps, n.created_at = $ts, n.tenant = $tenant
+        RETURN n.id AS row
+        """,
+        {
+            "id": note_id,
+            "text": playbook["text"][:4000],
+            "sig": playbook["signature"],
+            "steps": playbook["steps"],
+            "ts": _now(),
+            "tenant": tenant,
+        },
+        tenant=tenant,
+    )
+    linked: list[str] = []
+    for entity_id in playbook.get("entities") or []:
+        rows = db.query(
+            "MATCH (n:MemoryNote {id: $nid}), (e {id: $eid}) MERGE (n)-[:ABOUT]->(e) RETURN e.id AS row",
+            {"nid": note_id, "eid": entity_id},
+            tenant=tenant,
+        )
+        if rows:
+            linked.append(entity_id)
+    return {"saved": True, "note_id": note_id, "steps": playbook["steps"], "linked_to": linked}
+
+
+def playbooks(tenant: str | None = None, limit: int = 5) -> list[dict]:
+    """The learned procedures for a tenant, newest first."""
+    tenant = db.resolve_tenant(tenant)
+    rows = db.query(
+        """
+        MATCH (n:MemoryNote {kind: 'procedural'})
+        WHERE n.tenant = $tenant
+        WITH n
+        ORDER BY n.created_at DESC
+        LIMIT $limit
+        RETURN [n.id, n.text, n.signature, n.created_at] AS row
+        """,
+        {"tenant": tenant, "limit": limit},
+        tenant=tenant,
+    )
+    return [{"note_id": r[0], "text": r[1], "signature": r[2], "created_at": r[3]} for r in rows]
+
+
+def _entities_from_trace(trace: list[dict]) -> list[str]:
+    """Entity ids the tools actually operated on (for linking a playbook)."""
+    ids: list[str] = []
+    for entry in trace:
+        args = entry.get("arguments") or {}
+        for key in ("account_id", "entity_id", "target", "id_a", "id_b"):
+            value = args.get(key)
+            if isinstance(value, str) and value:
+                ids.append(value)
+        for value in args.get("entity_ids") or []:
+            if isinstance(value, str):
+                ids.append(value)
+        result = entry.get("result")
+        if isinstance(result, dict):
+            for key in ("account", "start"):
+                value = result.get(key)
+                if isinstance(value, str) and value:
+                    ids.append(value)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for entity_id in ids:
+        if entity_id and entity_id not in seen:
+            seen.add(entity_id)
+            unique.append(entity_id)
+    return unique[:20]
+
+
 def open_cases(tenant: str | None = None, limit: int = 5) -> list[dict]:
     tenant = db.resolve_tenant(tenant)  # cases live in the tenant's own graph
     rows = db.query(
@@ -189,6 +326,12 @@ def context_digest(question: str, tenant: str | None = None) -> str:
         for note in notes:
             about = f" -> {', '.join(note['about'])}" if note["about"] else ""
             lines.append(f"  - [{note['kind']}] {note['text'][:200]}{about}")
+
+    learned = playbooks(tenant, limit=3)
+    if learned:
+        lines.append("Learned playbooks (procedure that produced a verdict before — reuse it):")
+        for playbook in learned:
+            lines.append(f"  - {playbook['text'][:220]}")
 
     if question:
         linked = recall(_guess_entity(question), "", tenant, limit=3)
