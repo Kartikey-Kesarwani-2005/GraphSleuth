@@ -1,4 +1,4 @@
-"""Two agents, one graph — triage hands work to the investigator through FalkorDB.
+"""Agents sharing one graph — triage hands work to the investigator through FalkorDB.
 
 Track 02 ("shared state and handoffs between agents") in code:
 
@@ -203,9 +203,6 @@ def compose_triage_final(question: str, history: list[dict]) -> str:
 def build_verifier_brain(target: str, case_id: str = "") -> ScriptedBrain:
     """Offline stand-in for the verifier: independently re-checks then records."""
 
-    def collector(history: list[dict]) -> str:
-        return "ACC-9100"
-
     plan: list[tuple[str, Any]] = [
         ("recall", {"query": target}),
         ("find_shared_links", {"account_id": target}),
@@ -383,15 +380,23 @@ def run_pipeline(
 
 def pipeline_markdown(result: dict) -> str:
     """Render a full pipeline run as one markdown document."""
+    agents = 3 if result.get("verification") else 2
     parts: list[str] = [
         f"# GraphSleuth pipeline — {result['target']} (tenant: {result['tenant']})",
         "",
-        "Two agents, one graph: **{pipeline}**".format(**result),
+        "One graph, {agents} agents: **{pipeline}**".format(agents=agents, **result),
         "",
         f"- handoff created: `{result['handoff']['created'] or 'none'}`",
         f"- handoff accepted: `{result['handoff']['accepted'] or 'none'}` ({result['handoff']['status']})",
         f"- triage brain: {result['triage']['brain']} ({result['triage']['provider']})",
         f"- investigator brain: {result['investigation']['brain']} ({result['investigation']['provider']})",
+    ]
+    if result.get("verification"):
+        parts.append(
+            f"- verifier brain: {result['verification']['brain']} "
+            f"({result['verification']['provider']})"
+        )
+    parts += [
         "",
         "---",
         "",

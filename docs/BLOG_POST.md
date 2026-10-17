@@ -64,12 +64,14 @@ device-share clusters as noise. Strong links cluster; weak links corroborate.
 **Native algorithms as tools.** Four of the twenty tools are graph algorithms the model can call
 like any other: `connected_components` (`algo.WCC`), `community_detection`
 (`algo.labelPropagation`), `centrality` (`algo.betweenness` / `algo.HarmonicCentrality`) and
-`page_rank`. They ran live: label propagation found 187 communities, WCC found one component of
-1,701 nodes, and betweenness put `ACC-0124` at the top with a score of 6,719.28.
+`page_rank` (`algo.pageRank`). They ran live and reproducibly: label propagation found 181
+communities, WCC found one component of 1,702 nodes, betweenness (exact, pinned seed) put
+`ACC-0084` at the top, and PageRank ranks 1,702 nodes natively.
 
 **Tool selection is the agent's job.** Over MCP, all twenty tools are exposed with the same names,
-schemas and descriptions the built-in agent uses. A real MCP stdio client saw `tools: 20`,
-initialised cleanly, and got live graph data back from `entity_search` and
+schemas and descriptions the built-in agent uses — there is an offline test that asserts the MCP
+parameters match the agent's toolbelt exactly, so the two can't silently drift. A real MCP stdio
+client saw `tools: 20`, initialised cleanly, and got live graph data back from `entity_search` and
 `detect_suspicious_cluster`. A second agent — Claude Desktop, an IDE plugin, a teammate's agent —
 picks up the graph with no extra wiring.
 
@@ -87,7 +89,7 @@ twice and the second run's `recall` step returns the first run's own conclusion 
 process, even the machine, and it still knows. That is the whole point: state lives in FalkorDB,
 not in a prompt.
 
-## Two agents, one graph
+## Agents that share a graph — and check each other
 
 Track 02 asked for coordination, so we stopped passing context between agents and started passing
 it *through* the graph. `python -m graphsleuth pipeline` runs two agents:
@@ -105,6 +107,17 @@ entities), flagged `ACC-9003` and wrote a memory note. No state was passed throu
 the caller — the two agents share exactly one thing, the graph. Each agent block ends with an
 **Actions taken (verified from the tool log)** line, read from the trace rather than the model's
 prose.
+
+Add `--verify` and a third agent joins whose entire purpose is to *disagree*. **GraphSleuth-Verifier**
+doesn't trust the investigator's prose: it re-derives the claims from the graph itself
+(`find_shared_links`, `list_alerts`, `detect_suspicious_cluster`, `shortest_connection`) and returns
+CONFIRMED / WEAK / REFUTED with the discrepancies it found. A verification that can only ever agree
+is worthless, so the prompt says exactly that.
+
+The agent doesn't only remember *facts* either. When an investigation finishes, it distils its own
+tool sequence into a **playbook** — a `MemoryNote kind=procedural`, de-duplicated by signature and
+capped per tenant — and the next session's briefing suggests it. That is procedural memory in the
+same graph as the data: `python -m graphsleuth memory` shows the playbooks it has learned.
 
 ## One graph per tenant
 
@@ -125,16 +138,45 @@ a numbered evidence chain, the graph path (rendered as Mermaid), the tools used,
 and a confidence note with what's still missing. If the graph didn't show it, the agent doesn't
 claim it — every hop in the answer maps to the tool call that produced it.
 
+## The same graph, a second domain: a company brain
+
+The fraud graph is one instance of the pattern, not the pattern itself. `python -m graphsleuth
+company` seeds a *second* FalkorDB graph — people, teams, projects, systems, docs, tickets, chats
+and decisions — and answers the questions a company actually asks of its knowledge base:
+
+* **who knows a system** — the brief's exact `Person-[:WORKED_ON]->Project-[:USES]->System` query,
+  ranked, cross-checked against declared `:KNOWS` expertise;
+* **who owns what**, and what **breaks if a service goes down** (the reverse transitive
+  `:DEPENDS_ON` closure);
+* **why a decision was made** — traced through `:SOURCED_FROM` to the doc, ticket or chat that
+  caused it, and which earlier decision it supersedes;
+* **what's going stale** — ageing docs, superseded decisions, and bus-factor risk.
+
+Docs, tickets and chats live in one graph, each edge carrying the author, so an answer can always
+cite where it came from. The dataset is hand-authored and checked offline, so every number in the
+committed tour (`demos/COMPANY_BRAIN.md`) reproduces.
+
 ## Honest engineering notes
 
 We kept the warts in the repo, because they're more useful than a polished story:
 
 * **FalkorDB's `ORDER BY` in subqueries** needs the `WITH … ORDER BY … LIMIT … RETURN` pattern
   (it can only sort variables projected or grouped in that scope). Every sorting query follows it.
-* **`algo.pageRank` returns 0 rows** on `falkordb:latest` — verified on both a toy graph and the
-  real one. So `page_rank` falls back to an in-process power iteration (20 iterations, damping 0.85)
-  over the same graph and reports `engine: "in-process power iteration (algo.pageRank yielded 0
-  rows)"`. A documented quirk plus graceful degradation, never a silent wrong answer.
+* **`algo.pageRank` takes `(nodeLabel, relationshipType)`**, not `(iterations, damping)`. Our first
+  version passed two numbers, which FalkorDB reads as a label/type filter matching nothing — so
+  `page_rank` looked broken and fell back to a Python power iteration. Reading the procedure docs
+  fixed it: `algo.pageRank(null, null)` ranks the whole graph natively, and we filter the output by
+  label in Python.
+* **`algo.betweenness` is sampled by default** (32 source nodes, time-based seed), so its top nodes
+  changed between runs. We pass a config map pinning `samplingSeed` and raising `samplingSize` above
+  the node count, which makes FalkorDB use every source node — an exact, reproducible ranking the
+  tool labels `engine: "falkordb:algo.betweenness (exact, samplingSeed=42)"`.
+* **`count(*)` can collapse rows.** While building the company brain, `count(*)` reported 1 project
+  for a person who had matched 2 — counting a *bound* variable (`count(pr)`) returns the right
+  number. The who-knows query counts the variable.
+
+Neither is hidden: every algorithm result carries the `engine` that produced it, and there is a
+`python -m graphsleuth eval` check that fails if PageRank stops being native.
 
 ## Reproducible numbers
 
@@ -142,7 +184,9 @@ Everything above was produced against a live `falkordb/falkordb` container:
 
 * seed **1,702 nodes / 2,713 relationships** in `graphsleuth:default`;
 * demo: **11/11 tool calls `[ok]`**, cluster score 41.05, 6 hops proved, `CASE-0002` opened;
-* tests: **15/15** offline tests pass (`tests/test_offline.py`), `compileall` clean;
+* `eval`: **11/11 checks pass** against the live graph (ring precision, money path, algorithms,
+  memory round-trip, tenant isolation, procedural learning, explainability, read-only guard);
+* tests: **23/23** offline tests pass (`tests/test_offline.py`), `compileall` clean;
 * concurrency: 20 threads for 4 seconds → **2,307 ops (575.3 ops/s), 0 errors**
   (reads 1,956 @ 487.8/s, p50 20.55 ms; writes 351 @ 87.5/s, p50 45.43 ms).
 
@@ -158,13 +202,17 @@ Everything above was produced against a live `falkordb/falkordb` container:
 #   LLM: LIVE (groq:openai/gpt-oss-120b)
 #   fallback chain: openai/gpt-oss-120b -> openai/gpt-oss-20b -> qwen/qwen3.8-27b
 
-# 3. two agents sharing state through the graph
-.\.venv\Scripts\python.exe -m graphsleuth pipeline --target ACC-9003 --save demos/PIPELINE_REPORT.md
+# 3. agents sharing state through the graph, then an adversarial verifier
+.\.venv\Scripts\python.exe -m graphsleuth pipeline --target ACC-9003 --verify --save demos/PIPELINE_REPORT.md
+
+# 4. reproduce the scorecard, or open the live console
+.\.venv\Scripts\python.exe -m graphsleuth eval
+.\.venv\Scripts\python.exe -m graphsleuth serve
 ```
 
 **The takeaway.** Agents don't lose intelligence — they lose context. Put that context in a graph
 and the relationships themselves become the reasoning: money you can trace hop by hop, clusters you
-can prove, memory that outlives the session, and two agents that coordinate through shared state
+can prove, memory that outlives the session, and agents that coordinate through shared state
 instead of a pasted prompt. Give your agent a memory that has edges.
 
 *GraphSleuth — Team NexAI, "Graph Hacks: Context for AI Agents". Repo:

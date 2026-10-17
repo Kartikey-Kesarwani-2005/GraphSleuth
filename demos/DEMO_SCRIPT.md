@@ -124,33 +124,86 @@ The agent can call FalkorDB's `algo.*` procedures like any other tool:
 Point at the `engine` line in each result:
 
 ```
-connected_components  -> engine: falkordb:algo.WCC            components_found: 1 (1701 nodes)
-community_detection   -> engine: falkordb:algo.labelPropagation  communities_found: 187 (105/78/65/60/39…)
-centrality            -> engine: falkordb:algo.betweenness    top: ACC-0124 (6719.28), ACC-0170, ACC-0172
-page_rank             -> engine: in-process power iteration (algo.pageRank yielded 0 rows)
-                         top: ACC-0141 (0.00443), ACC-0187, ACC-0145
+connected_components  -> engine: falkordb:algo.WCC            components_found: 1 (1702 nodes)
+community_detection   -> engine: falkordb:algo.labelPropagation  communities_found: 181
+centrality            -> engine: falkordb:algo.betweenness (exact, samplingSeed=42)
+                         top: ACC-0084 (181363.62), ACC-0141, ACC-0124
+page_rank             -> engine: falkordb:algo.pageRank
+                         accounts: ACC-0141, ACC-0187, ACC-0145
 ```
 
-> "FalkorDB's native `algo.pageRank` returns 0 rows on `falkordb:latest`, so the tool falls back to
-> an in-process power iteration (20 iterations, d=0.85) and *says so* in the `engine` field. Graceful
-> degradation, reported honestly."
+> "Every algorithm result carries the `engine` that produced it — and two FalkorDB signatures are
+> worth knowing. `algo.pageRank` takes `(nodeLabel, relationshipType)`, not `(iterations, damping)`;
+> passing two numbers matches nothing, which is why our first version *thought* PageRank was broken.
+> And `algo.betweenness` samples source nodes with a time-based seed by default, so we pin
+> `samplingSeed=42` and raise `samplingSize` past the node count for an exact, reproducible ranking."
 
-## 7. Two agents, one graph (45s)
+## 7. Multi-agent pipeline (45s)
 
 ```powershell
-.\.venv\Scripts\python.exe -m graphsleuth pipeline --target ACC-9003 --save demos/PIPELINE_REPORT.md
+.\.venv\Scripts\python.exe -m graphsleuth pipeline --target ACC-9003 --verify --save demos/PIPELINE_REPORT.md
 ```
 
-Walk the three printed blocks:
+Walk the printed blocks:
 
 | Block | What to point at |
 |---|---|
 | **TRIAGE** | runs `list_alerts` / `recall` / `entity_search` / `find_shared_links` / `detect_suspicious_cluster`, then escalates with `create_handoff(to_role='investigator', …)` |
 | **HANDOFF (state shared through the graph)** | `created` and then `accepted` — a `Handoff` node written to the shared graph, nothing passed through the caller |
-| **INVESTIGATOR** | starts from `list_handoffs` / `accept_handoff`; evidence-chain step 1 is triage's memory note; opens `CASE-0003` (8 entities), flags `ACC-9003`, writes a memory note |
+| **INVESTIGATOR** | starts from `list_handoffs` / `accept_handoff`; evidence-chain step 1 is triage's memory note; opens `CASE-0002` (8 entities), flags `ACC-9003`, writes a memory note |
+| **VERIFIER** (with `--verify`) | an adversarial third agent that re-derives the claims from the graph and returns **CONFIRMED / WEAK / REFUTED**, plus the writes it really made |
 
-> "Two separate agent sessions, no shared memory object — FalkorDB is the entire channel between
-> them."
+> "Three separate agent sessions, no shared memory object — FalkorDB is the entire channel between
+> them. The verifier's whole job is to disagree: it only ever agrees when the graph makes it."
+
+## 7b. Reproducible scorecard (20s)
+
+```powershell
+.\.venv\Scripts\python.exe -m graphsleuth eval
+```
+
+Eleven pass/fail lines against the live graph — ring precision, money path, native algorithms,
+memory round-trip, tenant isolation, procedural learning, verified actions, read-only guard:
+
+```
+score: 11/11 checks passed (100%)
+```
+
+> "A judged demo shouldn't be 'trust me' — the seed is deterministic, so you can reproduce every
+> number on your own machine."
+
+## 7c. Live web console (30s)
+
+```powershell
+.\.venv\Scripts\python.exe -m graphsleuth serve      # open http://127.0.0.1:8765
+```
+
+Click **Investigate** and point at the stream: each tool call appears the moment the agent makes
+it, and the graph on the canvas grows as entities are discovered. Switch the tenant box to show a
+different graph on the same FalkorDB instance; untick "live model" to run the offline brain.
+
+## 7d. Company brain — Track 03 (30s)
+
+```powershell
+.\.venv\Scripts\python.exe -m graphsleuth company --save demos/COMPANY_BRAIN.md
+```
+
+A *second* graph on the same FalkorDB instance (tenant `company`): people, teams, projects,
+systems, docs, tickets, chats and decisions. Read the six sections aloud — each is a traversal that
+names its sources:
+
+* **who knows `SYS-ledger-db`** — the brief's exact
+  `Person-[:WORKED_ON]->Project-[:USES]->System` query, ranked, plus declared `:KNOWS` experts;
+* **who owns it**, and the teammates reachable from that owner;
+* **what breaks if it goes down** — the reverse transitive `:DEPENDS_ON` closure (3 systems,
+  4 projects, 3 teams at risk);
+* **why a decision was made** — traced via `:SOURCED_FROM` to the doc/ticket/chat that caused it;
+* **what we know, and where from** — docs · tickets · chats in one graph, each with its author;
+* **what's going stale** — ageing docs, a superseded decision, and bus-factor risk.
+
+> "Same FalkorDB, same pattern, different domain. The fraud graph asks *is this account in a ring?*;
+> the company graph asks *who knows this service, and why did we decide that?* — and every answer
+> points at the nodes it came from."
 
 ## 8. Concurrency under load (20s)
 

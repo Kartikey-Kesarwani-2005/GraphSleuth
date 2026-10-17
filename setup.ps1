@@ -94,6 +94,9 @@ New-Item -ItemType Directory -Force -Path "demos\out" | Out-Null
 
 Write-Host ""
 Write-Host "Done. Report: demos\out\report.md" -ForegroundColor Green
-Write-Host "Two-agent pipeline:  $python -m graphsleuth pipeline --target ACC-9003"
-Write-Host "Concurrency bench:   $python -m graphsleuth bench"
-Write-Host "Interactive mode:    $python -m graphsleuth chat"
+Write-Host "Multi-agent pipeline (3 agents):  $python -m graphsleuth pipeline --target ACC-9003 --verify"
+Write-Host "Reproducible scorecard:           $python -m graphsleuth eval"
+Write-Host "Learned playbooks + memory:       $python -m graphsleuth memory"
+Write-Host "Live web console:                 $python -m graphsleuth serve"
+Write-Host "Concurrency bench:                $python -m graphsleuth bench"
+Write-Host "Interactive mode:                 $python -m graphsleuth chat"

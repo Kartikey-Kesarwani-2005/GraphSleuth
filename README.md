@@ -8,8 +8,10 @@ pass-through transfers, the beneficiary at the end of the chain. Then it **shows
 took**, takes an action in the graph (raise an alert, open a case), and **remembers what it
 learned** for the next session.
 
-> Track 01 (agents that act on connected data) is the core. Track 02 (memory & coordination)
-> and Track 03 (company brain) are covered by the same graph — see [Track coverage](#track-coverage).
+> Track 01 (agents that act on connected data) is the core. Track 02 (memory & coordination) is
+> the same agent system. Track 03 (company brain) ships as a second, dedicated graph —
+> `python -m graphsleuth company` — with people, teams, projects, systems, docs, tickets, chats
+> and decisions. See [Track coverage](#track-coverage).
 
 ---
 
@@ -137,8 +139,12 @@ the graph and runs the demo — one command from a fresh clone.
 | `python -m graphsleuth status` | check FalkorDB connectivity + node/relationship counts |
 | `python -m graphsleuth seed` | (re)build the synthetic fraud network and baseline memory |
 | `python -m graphsleuth demo --target ACC-9003` | run the full scripted investigation, print the evidence trail, optionally `--save report.md` |
-| `python -m graphsleuth pipeline --target ACC-9003` | two agents on one graph: triage → handoff → investigator; `--save` writes a combined report |
+| `python -m graphsleuth pipeline --target ACC-9003` | two agents on one graph: triage → handoff → investigator; add `--verify` for a third adversarial verifier agent; `--save` writes a combined report |
 | `python -m graphsleuth bench --writers 4 --readers 16` | concurrency benchmark: mixed reads/writes with latency percentiles; `--save` writes raw JSON |
+| `python -m graphsleuth eval` | reproducible scorecard: 11 pass/fail checks over the live graph (ring precision, money path, algorithms, memory, tenant isolation, explainability, read-only guard); `--save` writes the JSON |
+| `python -m graphsleuth memory` | inspect the agent's memory: learned playbooks, notes and open cases for a tenant; `--kind episodic\|semantic\|procedural` filters |
+| `python -m graphsleuth serve` | interactive web console: streams the investigation live and grows the graph as it runs (`--port`, `--host`) |
+| `python -m graphsleuth company` | **Track 03 — Company Brain:** seed a second graph (people, teams, projects, systems, docs, tickets, chats, decisions) and tour six questions — who knows a system, who owns it, what breaks if it goes down, why a decision was made (traced to source), what we know (docs · tickets · chats), and what's going stale (`--system`, `--decision`, `--save`) |
 | `python -m graphsleuth chat` | interactive session; drives a live model when a key is set (Groq/OpenAI-compatible), else the offline fallback |
 
 ### LLM modes
@@ -253,6 +259,58 @@ the flagged account — visible in the `recall` step of the evidence trail (the 
 `recall` returns the first run's own memory note and open case). Memory is scoped by tenant, and with multigraph tenancy each
 tenant has its own graph, so the same deployment serves separate teams without leaking state.
 
+**Procedural memory — the agent learns how it works.** At the end of every substantial
+investigation the agent distils its own tool sequence into a **playbook** (`MemoryNote
+kind=procedural`, signature-deduplicated and capped per tenant) and writes it back to the graph. The
+next session's briefing suggests that procedure, so the routine is not rediscovered from scratch:
+
+```powershell
+python -m graphsleuth memory
+# PROCEDURAL — learned playbooks
+#   * MEM-…  Playbook: recall > entity_search > graph_neighbors > trace_money_flow > …
+```
+
+The playbook is *how* the agent worked; the episodic note is *what* it found; the semantic note is
+*what is durably true*. All three are `MemoryNote` nodes linked to the entities they concern via
+`:ABOUT`, so recalling them is a graph traversal, not a vector guess.
+
+---
+
+## Reproducible evaluation (`eval`)
+
+A judged demo should not be "trust me, it works":
+
+```powershell
+python -m graphsleuth eval
+#   [PASS] graph is seeded            1702 nodes / 2713 relationships
+#   [PASS] mule ring detected         top cluster 6 members, score 41.05, expected 6/6 present
+#   [PASS] noise filtered (precision) 6 accounts flagged out of 207 (2%)
+#   [PASS] money path traced          6 hops: ACC-EXT-01 -> … -> ACC-9100
+#   [PASS] native graph algorithms    1 components, 1702 nodes ranked (betweenness), pageRank via falkordb:algo.pageRank
+#   [PASS] memory round-trip / tenant isolation / procedural learning / verified actions / read-only guard
+#   score: 11/11 checks passed (100%)
+```
+
+The seed is deterministic (`random.Random(42)`), so the numbers are reproducible run to run. The
+isolation and memory checks run in a throwaway tenant (`eval-harness`) that is dropped afterwards,
+so `eval` never leaves residue in your real graphs.
+
+---
+
+## Web console (`serve`)
+
+The agent's value is *the path behind the answer*, and a terminal transcript hides it:
+
+```powershell
+python -m graphsleuth serve            # then open http://127.0.0.1:8765
+```
+
+A single-page app (no CDN, no build step) that streams the agent's live reasoning — each tool call
+and result — over newline-delimited JSON, grows a force-directed graph of the entities it touches as
+they are discovered, and shows the verdict, the graph-verified write actions and the tenant's
+memory. Switch the tenant in the UI and the whole view is a different graph on the same FalkorDB
+instance. Uncheck "live model" to run the deterministic offline brain.
+
 ---
 
 ## Multigraph tenancy (one graph per tenant)
@@ -290,24 +348,29 @@ the whole `graphsleuth:acme` graph, canary included.
 Four of the twenty tools are graph algorithms the model can call like any other tool. They run as
 **native FalkorDB procedures**:
 
-| Tool | FalkorDB procedure | Verified output (live) |
+| Tool | FalkorDB procedure | Verified output (fresh seed, reproducible) |
 |---|---|---|
-| `connected_components` | `algo.WCC` (engine reports `falkordb:algo.WCC`) | 1 component of 1701 nodes |
-| `community_detection` | `algo.labelPropagation` | 187 communities (sizes 105 / 78 / 65 / 60 / 39 …) |
-| `centrality` | `algo.betweenness`, `algo.HarmonicCentrality` | betweenness top: `ACC-0124` (6719.28), `ACC-0170`, `ACC-0172` |
-| `page_rank` | see the quirk below | with `label='Account'`: `ACC-0141` (0.00443), `ACC-0187`, `ACC-0145` |
-
-**Honest quirk — `page_rank`.** FalkorDB's native `algo.pageRank` returns 0 rows on
-`falkordb:latest` (verified on both a toy graph and the real one), so the tool falls back to an
-**in-process power iteration** (20 iterations, damping 0.85) over the same graph and says so in its
-result:
-
-```
-engine: "in-process power iteration (algo.pageRank yielded 0 rows)"
-```
+| `connected_components` | `algo.WCC` | 1 component of 1702 nodes |
+| `community_detection` | `algo.labelPropagation` | 181 communities |
+| `centrality` | `algo.betweenness` (exact) / `algo.HarmonicCentrality` | betweenness top: `ACC-0084`, `ACC-0141`, `ACC-0124`; harmonic top: `ACC-0188`, `ACC-0176`, `ACC-0084` |
+| `page_rank` | `algo.pageRank(null, null)` | 1702 nodes ranked; most central accounts `ACC-0141`, `ACC-0187`, `ACC-0145`; merchants `M-02`, `M-08`, `M-10` lead overall |
 
 Every algorithm result carries an `engine` field, so you can always tell which path produced the
-ranking — documented quirk plus graceful degradation instead of a silent wrong answer.
+ranking. Two FalkorDB behaviours are worth knowing — the tools handle them rather than hiding them:
+
+* **`algo.pageRank` takes `(nodeLabel, relationshipType)`**, *not* `(iterations, damping)`. Passing
+  two numbers is silently read as a label/type filter that matches nothing (which is why an earlier
+  version of this project thought the procedure was broken and fell back to Python). We call
+  `algo.pageRank(null, null)` for the whole graph and filter the output by `label` in Python, so
+  `label='Account'` means *accounts central to the whole flow* — ranking strictly *within* accounts
+  would be uniform, since accounts have no account→account edges.
+* **`algo.betweenness` samples 32 source nodes with a time-based seed** by default, so its ranking
+  changes between runs. The tool pins `samplingSeed=42` and sets `samplingSize` above the node
+  count, which makes FalkorDB use *every* source node — an exact, reproducible ranking in ~0.4s
+  (`engine: "falkordb:algo.betweenness (exact, samplingSeed=42)"`).
+
+If a build ever lacks a procedure, the tool degrades gracefully and says so in its `engine` field
+instead of failing silently.
 
 ---
 
@@ -326,6 +389,20 @@ starts with `list_handoffs` / `accept_handoff` and continues from graph state al
 No state is passed through the caller: the two agents are separate sessions and the graph is the
 only thing they share.
 
+### Three agents: the adversarial verifier (`--verify`)
+
+```powershell
+python -m graphsleuth pipeline --target ACC-9003 --verify --save demos/PIPELINE_REPORT.md
+```
+
+Adding `--verify` appends a third agent, **GraphSleuth-Verifier** (`VERIFIER_PROMPT`), whose whole
+job is to *disagree*. It does not trust the investigator's prose: it re-derives the key claims from
+the graph itself (`find_shared_links`, `list_alerts`, `detect_suspicious_cluster`,
+`shortest_connection`) and returns **CONFIRMED / WEAK / REFUTED** with the discrepancies it found and
+the writes it really made. It reads the case, alerts and notes the earlier agents left — again
+through the graph only — and records its verdict as a case note plus a semantic memory note. A
+verification that can only agree is worthless, so the prompt says so explicitly.
+
 Verified offline run (`demos/PIPELINE_REPORT.md`, produced by `seed` → `demo` → `pipeline`):
 
 * triage escalated → a `Handoff` node created in the shared graph, then `accepted`;
@@ -336,6 +413,46 @@ Verified offline run (`demos/PIPELINE_REPORT.md`, produced by `seed` → `demo` 
 
 A **real-model** version of the same pipeline (both brains `groq:openai/gpt-oss-120b`) is committed
 at [`demos/LIVE_RUN.md`](demos/LIVE_RUN.md).
+
+---
+
+## Company brain (Track 03)
+
+The fraud graph proves the pattern; the company brain shows the *same pattern* on an org-shaped
+question. `python -m graphsleuth company` seeds a **second FalkorDB graph** (tenant `company`) —
+people, teams, projects, systems, docs, tickets, chats and decisions — and tours six questions,
+each a graph traversal that names its sources:
+
+```powershell
+python -m graphsleuth company --system SYS-ledger-db --decision ADR-002 --save demos/COMPANY_BRAIN.md
+```
+
+1. **Who knows about this system?** — the brief's exact query, ranked:
+   ```cypher
+   MATCH (p:Person)-[:WORKED_ON]->(pr:Project)-[:USES]->(s:System {id: $system})
+   WITH p, count(pr) AS projects
+   ORDER BY projects DESC, p.id
+   RETURN [p.id, p.name, projects] AS row
+   ```
+   …plus explicitly declared `:KNOWS` experts, so "knows" is both *inferred from work* and *stated*.
+2. **Who owns it?** — owning person/team, and the teammates reachable from that owner.
+3. **What breaks if it goes down?** — the reverse transitive `:DEPENDS_ON` closure, the projects at
+   risk and the teams that own them.
+4. **Why was this decision made?** — traced through `:SOURCED_FROM` to the doc/ticket/chat that
+   caused it, who decided it, and which earlier decision it supersedes.
+5. **What do we know, and where from?** — docs · tickets · chats about the system, each with its
+   author, all from one graph.
+6. **What knowledge is going stale?** — ageing docs, superseded decisions, and bus-factor risk
+   (a system with ≤1 declared expert that projects depend on).
+
+The committed tour is [`demos/COMPANY_BRAIN.md`](demos/COMPANY_BRAIN.md). The graph is hand-authored
+(no RNG), so every number reproduces; `tests/test_offline.py` checks the dataset for referential
+integrity, a real dependency chain, a superseded decision, and a source on every decision — with no
+database needed.
+
+Two FalkorDB quirks surfaced here and are handled in the queries: `count(*)` can collapse rows
+(so the "who knows" query counts a bound variable, `count(pr)`), and the `ORDER BY` scoping rule
+applies as everywhere else.
 
 ---
 
@@ -402,7 +519,8 @@ Selected output (copied from the report):
   own conclusion — proof that state lives in the graph, not the process.
 * **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 20 tools and
   gets live graph data back (`tools: 20`; live `entity_search` + `detect_suspicious_cluster` calls).
-* **Tests:** `tests/test_offline.py` → 15/15 pass (no database required); `compileall` clean.
+* **Tests:** `tests/test_offline.py` → 23/23 pass (no database required; includes an MCP/agent
+  toolbelt parity check); `compileall` clean.
 
 > Run ids (`AL-…`, `NOTE-…`, `MEM-…`, `HANDOFF-…`) are generated per run, so they differ between
 > runs; the committed report files are the source of truth for any specific id.
@@ -416,9 +534,9 @@ notes, so the node count grows past the seed's 1702 — visible with `python -m 
 
 | Track | How GraphSleuth hits it |
 |---|---|
-| **01 — Act on connected data** | Multi-hop reasoning over accounts/devices/transactions; native graph algorithms as tools (`algo.WCC`, `algo.labelPropagation`, betweenness/harmonic centrality, plus page-rank with a documented fallback); union-find clustering over shared-device links with beneficiary-collector corroboration; BFS pathfinding with an optional relationship filter; Cypher as a read-only tool; actions (alert, case) driven by graph evidence; full evidence trail + Mermaid path |
-| **02 — Memory & coordination** | Episodic (`Session`/`Message`), semantic and procedural (`MemoryNote`) memory persisted in the graph; memory briefing before every question; two agents coordinate through `Handoff` nodes written to the shared graph (triage → investigator, no caller-pasted context); cases/alerts/notes are shared state any agent (or MCP client) can pick up; one FalkorDB graph per tenant (topological isolation) |
-| **03 — Company brain** | The same pattern applied to an org: people, accounts, records, decisions and cases in one graph, with every answer traceable to its source entities and prior notes |
+| **01 — Act on connected data** | Multi-hop reasoning over accounts/devices/transactions; native graph algorithms as tools (`algo.WCC`, `algo.labelPropagation`, exact betweenness / harmonic centrality, native `algo.pageRank`); union-find clustering over shared-device links with beneficiary-collector corroboration; BFS pathfinding with an optional relationship filter; Cypher as a read-only tool; actions (alert, case) driven by graph evidence; full evidence trail + Mermaid path |
+| **02 — Memory & coordination** | Episodic (`Session`/`Message`), semantic and procedural (`MemoryNote`) memory persisted in the graph; memory briefing before every question; **playbooks distilled from finished investigations and reused**; agents coordinate through `Handoff` nodes written to the shared graph (triage → investigator, optionally → an adversarial **verifier**, no caller-pasted context); cases/alerts/notes are shared state any agent (or MCP client) can pick up; one FalkorDB graph per tenant (topological isolation); concurrency benchmark + `eval` scorecard |
+| **03 — Company brain** | A dedicated second graph (`python -m graphsleuth company`, tenant `company`): people, teams, projects, systems, docs, tickets, chats and decisions in one FalkorDB graph. It answers the brief's six questions — **who knows a system** (the brief's exact `Person-[:WORKED_ON]->Project-[:USES]->System` query, ranked, plus declared `:KNOWS` experts), **who owns what**, **what breaks if a service goes down** (reverse transitive `:DEPENDS_ON` closure), **why a decision was made** traced to the doc/ticket/chat it was sourced from, **what we know** (docs · tickets · chats, each with a named author), and **what knowledge is going stale** (ageing docs, superseded decisions, bus-factor risk). See [`demos/COMPANY_BRAIN.md`](demos/COMPANY_BRAIN.md). |
 
 ---
 
@@ -430,14 +548,18 @@ GraphSleuth/
 │  ├─ config.py        # env config (FalkorDB + LLM)
 │  ├─ db.py            # the only module that talks to FalkorDB (multigraph tenancy)
 │  ├─ seed.py          # synthetic fraud network + baseline memory
+│  ├─ company.py       # Track 03: company-brain graph + tour (`company`)
 │  ├─ tools.py         # the 20 graph tools (reads, algorithms, handoffs, writes)
 │  ├─ memory.py        # episodic / semantic / procedural memory
 │  ├─ llm.py           # live (Groq / OpenAI-compatible) + offline fallback brains
 │  ├─ agent.py         # the investigation loop + system prompt
-│  ├─ agents.py        # two-agent pipeline (triage → handoff → investigator)
+│  ├─ agents.py        # multi-agent pipeline (triage → handoff → investigator → verifier)
+│  ├─ evaluate.py      # reproducible evaluation scorecard (`eval`)
 │  ├─ bench.py         # concurrency benchmark
 │  ├─ explain.py       # evidence trail + Mermaid path rendering
-│  ├─ cli.py           # status / seed / demo / pipeline / bench / chat
+│  ├─ cli.py           # status / seed / demo / pipeline / bench / eval / memory / company / serve / chat
+│  ├─ server.py        # zero-dependency web console (`serve`): live stream + growing graph
+│  ├─ web/             # the console's single-page app (plain HTML/CSS/JS, no CDN)
 │  └─ mcp_server.py    # the same 20 tools over MCP (stdio)
 ├─ tests/              # offline unit tests (no database needed)
 ├─ demos/              # demo script + saved reports
@@ -474,6 +596,7 @@ this one folder. The only machine-wide pieces are Docker Desktop itself and the 
   `WITH … ORDER BY … LIMIT … RETURN`. The seed and all read tools were run against a live
   `falkordb/falkordb` container, not a mock.
 * **Tenancy is a graph boundary, not a filter.** Each tenant is a separate FalkorDB graph selected
-  through a `ContextVar`, so isolation is structural; and when a native procedure misbehaves
-  (`algo.pageRank` returns 0 rows), the tool degrades gracefully *and reports which engine ran*
-  (`engine: in-process power iteration …`) rather than failing silently.
+  through a `ContextVar`, so isolation is structural. Native procedures are invoked with their real
+  signatures — and where a procedure is non-reproducible by default (`algo.betweenness` samples with
+  a time-based seed), the tool pins a seed and reports the exact `engine` that ran instead of hiding
+  the variability.

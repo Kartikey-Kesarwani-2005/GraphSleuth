@@ -393,6 +393,92 @@ def test_compose_verifier_final_reports_independently() -> None:
     assert "NOTE-1" in text and "MEM-1" in text
 
 
+def test_mcp_exposes_every_tool_with_matching_parameters() -> None:
+    """Track 01: "tool selection through MCP". The MCP toolbelt must be the same
+    one the built-in agent uses — same names, same parameters. The two can drift
+    silently (shortest_connection was missing `via` over MCP until this test),
+    which would make an MCP client unable to reproduce the agent's money-only
+    path.
+    """
+    import importlib
+    import inspect
+
+    try:
+        mcp_server = importlib.import_module("graphsleuth.mcp_server")
+    except (ImportError, SystemExit) as exc:  # MCP package is optional here
+        print(f"(skipping MCP parity: {exc})")
+        return
+
+    specs = {
+        spec["function"]["name"]: set(spec["function"]["parameters"]["properties"])
+        for spec in tools.TOOL_SPECS
+    }
+    assert len(specs) == 20
+    for name, spec_params in specs.items():
+        exported = getattr(mcp_server, name, None)
+        assert callable(exported), f"{name} is not exposed over MCP"
+        mcp_params = set(inspect.signature(exported).parameters)
+        assert mcp_params == spec_params, (
+            f"{name}: MCP parameters {sorted(mcp_params)} != agent toolbelt {sorted(spec_params)}"
+        )
+
+
+def test_company_brain_dataset_is_internally_consistent() -> None:
+    """Track 03: the company graph is data-correct before it ever touches FalkorDB.
+
+    Every edge endpoint must resolve to a declared node, every decision must be
+    traceable to at least one doc/ticket/chat source, and the dataset must contain
+    the shape the tour relies on (a deep dependency chain and a superseded decision).
+    """
+    from graphsleuth import company
+
+    data = company.build()
+    ids = set(data["nodes"])
+
+    # every edge endpoint exists, and no self-edges sneak in
+    for rel, src, dst in data["edges"]:
+        assert src in ids, f"{rel} source {src} is not a declared node"
+        assert dst in ids, f"{rel} target {dst} is not a declared node"
+        assert src != dst, f"{rel} self-edge on {src}"
+
+    # every decision cites its sources (the "trace decisions to their source" requirement)
+    sourced = {src for rel, src, _ in data["edges"] if rel == "SOURCED_FROM"}
+    for decision in data["decisions"]:
+        assert decision["id"] in sourced, f"{decision['id']} has no SOURCED_FROM"
+
+    # docs, tickets and chats all attach to systems (docs/tickets/chats in one graph)
+    for rel, kind in (("ABOUT", "Doc"), ("ABOUT", "Ticket"), ("MENTIONS", "Chat")):
+        assert any(
+            rel == r and data["nodes"][s]["label"] == kind for r, s, _ in data["edges"]
+        ), f"no {kind} linked via {rel}"
+
+    # a dependency chain exists deep enough for a transitive blast radius
+    depends = {}
+    for rel, src, dst in data["edges"]:
+        if rel == "DEPENDS_ON":
+            depends.setdefault(src, set()).add(dst)
+
+    def depth(node: str, seen: frozenset[str]) -> int:
+        children = depends.get(node, set())
+        if not children or node in seen:
+            return 0
+        return 1 + max(depth(child, seen | {node}) for child in children)
+
+    assert max(depth(s["id"], frozenset()) for s in data["systems"]) >= 2
+
+    # and a decision that was later reversed (knowledge kept current)
+    assert any(rel == "SUPERSEDES" for rel, _, _ in data["edges"])
+
+
+def test_company_build_is_deterministic() -> None:
+    from graphsleuth import company
+
+    assert company.build() == company.build()
+    # the brief's front-page query shape is preserved verbatim
+    assert "(p:Person)-[:WORKED_ON]->(pr:Project)-[:USES]->(s:System" in company.WHO_KNOWS_QUERY
+    assert "count(pr)" in company.WHO_KNOWS_QUERY  # not count(*): see the quirk note
+
+
 if __name__ == "__main__":
     failures = 0
     for name, function in sorted(globals().items()):

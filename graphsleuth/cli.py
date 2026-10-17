@@ -180,6 +180,25 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_company(args: argparse.Namespace) -> int:
+    from . import company
+
+    db.set_tenant(args.tenant)
+    tenant = db.resolve_tenant()
+    if not args.keep:
+        company.seed(reset=True, verbose=not args.quiet)
+    print(f"Company brain — tenant '{tenant}' (graph '{db.graph_name_for(tenant)}')\n")
+    report = company.run_demo(
+        system_id=args.system, decision_id=args.decision, verbose=not args.quiet
+    )
+    if args.save:
+        path = Path(args.save)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(report, encoding="utf-8")
+        print(f"\nSaved company-brain report to {path}")
+    return 0
+
+
 def cmd_chat(args: argparse.Namespace) -> int:
     agent = GraphSleuth(tenant=args.tenant, session_id=args.session, model=args.model)
     print(f"GraphSleuth ready. session={agent.session_id} tenant={agent.tenant}")
@@ -266,6 +285,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--host", default="127.0.0.1", help="bind address (default localhost only)")
     p_serve.add_argument("--port", type=int, default=8765)
     p_serve.set_defaults(func=cmd_serve)
+
+    from . import company as _company
+
+    p_company = sub.add_parser(
+        "company", help="Company Brain (Track 03): who knows what, ownership, blast radius, decisions"
+    )
+    p_company.add_argument("--tenant", default=_company.DEFAULT_TENANT, help="company brain tenant graph")
+    p_company.add_argument("--system", default="SYS-ledger-db", help="system to focus the tour on")
+    p_company.add_argument("--decision", default="ADR-002", help="decision to trace back to its source")
+    p_company.add_argument("--keep", action="store_true", help="use the existing graph instead of re-seeding")
+    p_company.add_argument("--save", default="", help="write the markdown tour to this path")
+    p_company.add_argument("--quiet", action="store_true", help="only write the report, do not print it")
+    p_company.set_defaults(func=cmd_company)
 
     return parser
 

@@ -86,10 +86,16 @@ def check_shared_device_signal(tenant: str) -> tuple[bool, str]:
 def check_native_algorithms(tenant: str) -> tuple[bool, str]:
     components = HANDLERS["connected_components"](top=5, min_size=2)
     centrality = HANDLERS["centrality"](kind="betweenness", top=3)
-    ok = (components.get("components_found", 0) >= 1) and (centrality.get("nodes_ranked", 0) > 0)
+    pagerank = HANDLERS["page_rank"](top=3)
+    ok = (
+        components.get("components_found", 0) >= 1
+        and centrality.get("nodes_ranked", 0) > 0
+        and "algo.pageRank" in str(pagerank.get("engine", ""))
+    )
     return ok, (
         f"{components.get('components_found')} components, "
-        f"{centrality.get('nodes_ranked')} nodes ranked (betweenness)"
+        f"{centrality.get('nodes_ranked')} nodes ranked (betweenness), "
+        f"pageRank via {pagerank.get('engine')}"
     )
 
 
@@ -160,6 +166,12 @@ def run(tenant: str = memory.DEFAULT_TENANT) -> dict:
             passed, detail = check(tenant)
         except Exception as exc:  # noqa: BLE001 - a broken check is a failed check, not a crash
             passed, detail = False, f"{type(exc).__name__}: {exc}"
+        finally:
+            # Some checks (memory round-trip, isolation) switch the context to the
+            # throwaway harness tenant. Restore the tenant of record so every check
+            # starts from the same graph — otherwise a later check would silently
+            # run against the harness.
+            db.set_tenant(tenant)
         results.append({"check": name, "passed": bool(passed), "detail": detail})
     try:
         db.drop_tenant(HARNESS_TENANT)

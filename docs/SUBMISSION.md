@@ -43,18 +43,27 @@ graph is what makes the answer possible.
    (`db.set_tenant` / `db.tenant_scope`). Isolation is topological: a canary memory note written in
    tenant `acme` was invisible from `default` (1 vs 0 notes) even to `run_cypher`, which only ever
    sees the active tenant's graph.
-7. **Two agents share state through the graph.** `pipeline` runs Triage → Investigator: triage
+7. **Agents share state through the graph.** `pipeline` runs Triage → Investigator: triage
    writes its findings into a `Handoff` node (`create_handoff`), the investigator reads it back
    (`list_handoffs` / `accept_handoff`) as its *first* tool call. No context is pasted through the
-   caller — FalkorDB is the only channel.
+   caller — FalkorDB is the only channel. Add `--verify` for a third adversarial agent that
+   re-derives the claims from the graph and returns CONFIRMED / WEAK / REFUTED.
+8. **The agent learns procedures, not just facts.** A finished investigation is distilled into a
+   `MemoryNote kind=procedural` playbook (its own tool sequence, de-duplicated and capped per
+   tenant) and suggested to the next session's briefing — procedural memory in the same graph as
+   the data.
+9. **Every claim is machine-checkable.** `python -m graphsleuth eval` runs 11 pass/fail checks
+   against the live graph (ring precision, money path, native algorithms, memory round-trip, tenant
+   isolation, procedural learning, explainability, read-only guard) and the report's "Actions taken"
+   comes from the tool trace, never the model's prose.
 
 ## Track coverage
 
 | Track | Evidence in the project |
 |---|---|
-| **01 — Connected data** | 12 read tools (incl. native graph algorithms + Cypher); agent acts via 8 write tools; all 20 exposed over MCP stdio (verified with a real MCP client); evidence trail and Mermaid path in every report |
-| **02 — Memory & coordination** | `Session`/`Message` episodic memory, `MemoryNote` semantic + procedural memory, briefing injected before each question; **multigraph isolation per tenant**; **Triage → Investigator handoff through `Handoff` nodes**; **concurrency bench: 20 threads, 575 ops/s, 0 errors** |
-| **03 — Company brain** | The same "one graph, traceable answers" pattern applied to accounts, people, merchants, alerts and decisions; every claim cites its source entities and prior notes |
+| **01 — Connected data** | 12 read tools (incl. native graph algorithms + Cypher); agent acts via 8 write tools; all 20 exposed over MCP stdio (verified with a real MCP client, plus an offline test that the MCP parameters match the built-in toolbelt); evidence trail and Mermaid path in every report |
+| **02 — Memory & coordination** | `Session`/`Message` episodic memory, `MemoryNote` semantic + procedural memory, **playbook learning**, briefing injected before each question; **multigraph isolation per tenant**; **Triage → Investigator → (optional) Verifier handoff through `Handoff` nodes**; **concurrency bench: 0 errors**, atomic case-id allocation |
+| **03 — Company brain** | Dedicated second graph (`python -m graphsleuth company`, tenant `company`): people, teams, projects, systems, docs, tickets, chats and decisions. Answers the brief's six questions — who knows a system (brief's exact `Person-[:WORKED_ON]->Project-[:USES]->System` query + declared `:KNOWS` experts), who owns what, what breaks if a service goes down (reverse transitive `:DEPENDS_ON`), why a decision was made (traced via `:SOURCED_FROM` to docs/tickets/chats), what we know and from where, and what's going stale (ageing docs, superseded decisions, bus-factor risk). Committed tour: `demos/COMPANY_BRAIN.md` |
 
 ## Demo
 
@@ -62,7 +71,10 @@ graph is what makes the answer possible.
 docker compose up -d
 .\.venv\Scripts\python.exe -m graphsleuth seed
 .\.venv\Scripts\python.exe -m graphsleuth demo --target ACC-9003 --save demos/out/report.md
-.\.venv\Scripts\python.exe -m graphsleuth pipeline --target ACC-9003   # two agents
+.\.venv\Scripts\python.exe -m graphsleuth pipeline --target ACC-9003 --verify   # triage -> investigator -> verifier
+.\.venv\Scripts\python.exe -m graphsleuth eval                                  # 11/11 reproducibility scorecard
+.\.venv\Scripts\python.exe -m graphsleuth company --save demos/COMPANY_BRAIN.md # Track 03 company brain
+.\.venv\Scripts\python.exe -m graphsleuth serve                                 # live web console
 ```
 
 Result (verified run, offline fallback brain — with `GROQ_API_KEY` set the *same* loop is driven
@@ -71,11 +83,19 @@ collector `ACC-9100`, 4 false clusters filtered out, score 41.05), narrates the 
 `ACC-EXT-01 → TX-9000 → ACC-9001 → … → ACC-9100` (6 hops), flags the account, opens a case and
 writes a memory note. Running it again shows the second session recalling the first.
 
-The two-agent pipeline additionally shows a `Handoff` created by triage and accepted by the
+The multi-agent pipeline additionally shows a `Handoff` created by triage and accepted by the
 investigator, whose first evidence line comes from triage's memory note — state moved through the
-graph only. Each agent block ends with an **Actions taken (verified from the tool log)** line.
+graph only. With `--verify`, a third adversarial agent re-checks the case against the graph and
+reports CONFIRMED / WEAK / REFUTED. Each agent block ends with an **Actions taken (verified from the
+tool log)** line.
 
 Full walkthrough: `demos/DEMO_SCRIPT.md`.
+
+**Company brain (Track 03).** `python -m graphsleuth company` seeds a second graph (tenant
+`company`) — 55 nodes / 131 relationships covering people, teams, projects, systems, docs, tickets,
+chats and decisions — and tours six questions, each a traversal that names its sources. The
+committed tour is `demos/COMPANY_BRAIN.md`. The dataset is hand-authored and checked offline for
+referential integrity, a real dependency chain and source-traced decisions.
 
 ## What is real vs. synthetic
 
@@ -84,14 +104,17 @@ Full walkthrough: `demos/DEMO_SCRIPT.md`.
   tool loop with a live LLM choosing tools (Groq; offline fallback brain only when no key is set),
   actual MCP stdio server, actual multi-tenant multigraph isolation, actual concurrent
   reads/writes, actual persistence across sessions and processes.
-* **Synthetic:** the fraud network (seeded by `graphsleuth/seed.py`) — generated so that the ring is
-  *findable through connections* while ~200 ordinary accounts create realistic noise.
+* **Synthetic:** the fraud network (seeded by `graphsleuth/seed.py`) and the company brain
+  (seeded by `graphsleuth/company.py`) — generated so that the ring is *findable through
+  connections* while ~200 ordinary accounts create realistic noise, and so the org graph has a
+  real dependency chain, a reversed decision and bus-factor risk.
 
 ## Verification (measured on this machine)
 
 ```powershell
-.\.venv\Scripts\python.exe tests/test_offline.py        # 15/15 pass, no database needed
+.\.venv\Scripts\python.exe tests/test_offline.py        # 23/23 pass, no database needed
 .\.venv\Scripts\python.exe -m graphsleuth status        # connectivity + graph + LLM check
+.\.venv\Scripts\python.exe -m graphsleuth eval          # 11/11 live scorecard
 ```
 
 | Check | Result |
@@ -100,14 +123,17 @@ Full walkthrough: `demos/DEMO_SCRIPT.md`.
 | Demo tool calls | 11/11 `[ok]`, saved to `demos/EXAMPLE_REPORT.md` (opens `CASE-0002`; alert/note/memory ids are generated per run) |
 | Cluster detection | 1 cluster, 6 members (ACC-9001..9005 + collector ACC-9100), 4 false clusters filtered, score 41.05 |
 | Money path (`via=ORIGINATED,DESTINED`) | 6 hops, ACC-EXT-01 → TX-9000 → ACC-9001 → … → ACC-9100 |
-| Native algorithms | WCC: 1 component/1701 nodes; label propagation: 187 communities; betweenness top: ACC-0124 (6719.28) |
-| `page_rank` | native `algo.pageRank` yields 0 rows on this FalkorDB build → tool falls back to in-process power iteration (engine reported in result) |
-| Two-agent pipeline | handoff created → accepted, `CASE-0003` opened with 8 entities, report `demos/PIPELINE_REPORT.md`; real-model run in `demos/LIVE_RUN.md` |
+| Native algorithms | WCC: 1 component/1702 nodes; label propagation: 181 communities; betweenness (exact, pinned seed) top: ACC-0084 (181363.62), ACC-0141, ACC-0124 |
+| `page_rank` | native `algo.pageRank(null, null)`: 1702 nodes ranked; most central accounts ACC-0141, ACC-0187, ACC-0145 |
+| Multi-agent pipeline | handoff created → accepted, `CASE-0003` opened with 8 entities, report `demos/PIPELINE_REPORT.md`; with `--verify` a third agent re-checks the case (CONFIRMED/WEAK/REFUTED); real-model run in `demos/LIVE_RUN.md` |
+| Procedural learning | `python -m graphsleuth memory` lists the playbooks distilled from finished investigations |
+| `eval` scorecard | 11/11 checks pass against the live graph, reproducible thanks to the deterministic seed |
+| Web console | `python -m graphsleuth serve` streams the run (start → 11 tool calls → answer) and serves the graph/memory APIs |
 | Multigraph isolation | canary note: tenant `acme` = 1, tenant `default` = 0; `drop_tenant('acme')` removes the graph |
-| Concurrency bench (20 threads, 4 s) | 2307 ops, 575 ops/s; reads p50 20.6 ms / p95 71.1 ms; writes p50 45.4 ms / p95 82.3 ms; **0 errors** |
+| Concurrency bench (20 threads, 4 s) | 2307 ops, 575 ops/s; reads p50 20.6 ms / p95 71.1 ms; writes p50 45.4 ms / p95 82.3 ms; **0 errors**; 20 concurrent `open_case` calls yield 20 unique ids |
 | MCP server (stdio) | real client: `initialize` OK, **20 tools**, live `entity_search` + `detect_suspicious_cluster` calls |
 | Model fallback | `gpt-oss-120b` hit its daily cap mid-run → brain auto-switched to `gpt-oss-20b` and finished the investigation; real capture in `demos/MODEL_FALLBACK.md` |
-| Tests / compile | 15/15 offline tests pass, `compileall` clean |
+| Tests / compile | 23/23 offline tests pass (incl. MCP/agent toolbelt parity + company-brain dataset integrity), `compileall` clean |
 
 ## Limits / honest notes
 
@@ -116,11 +142,13 @@ Full walkthrough: `demos/DEMO_SCRIPT.md`.
   (free) and the same loop is driven by a real LLM choosing tools itself — no code changes.
 * Small-scale dataset by design (a few thousand nodes) — enough to prove the approach, not a
   production fraud engine.
-* `connected_components`, `community_detection` and `centrality` call FalkorDB's native `algo.*`
-  procedures directly. `page_rank` tries native `algo.pageRank` first, but that procedure returns
-  0 rows on the `falkordb/falkordb:latest` build used here (verified on a toy graph too), so the
-  tool computes PageRank in-process (20 power iterations, d=0.85) over the same graph and reports
-  which engine produced the answer. `detect_suspicious_cluster` (device-union + collector
-  corroboration) stays in Python/Cypher by design: its signal rules are the domain logic.
+* `connected_components`, `community_detection`, `centrality` and `page_rank` call FalkorDB's native
+  `algo.*` procedures directly. Two signatures needed care: `algo.pageRank(nodeLabel, relationshipType)`
+  (a numeric `(iterations, damping)` call silently matches nothing — the tool calls
+  `algo.pageRank(null, null)` and filters by label in Python), and `algo.betweenness`, which samples
+  source nodes with a time-based seed by default (the tool pins `samplingSeed=42` and raises
+  `samplingSize` past the node count for an exact, reproducible ranking). `detect_suspicious_cluster`
+  (device-union + collector corroboration) stays in Python/Cypher by design: its signal rules are the
+  domain logic.
 * Data is synthetic and deliberately small: it exists to make one ring *findable through
   connections* while 200 ordinary accounts provide realistic noise.

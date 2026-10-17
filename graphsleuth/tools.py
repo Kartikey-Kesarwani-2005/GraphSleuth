@@ -602,17 +602,22 @@ def _has_label(entity: Any, label: str) -> bool:
 def page_rank(top: int = 10, label: str = "") -> dict:
     """PageRank: which entities sit at the centre of the flow through the graph.
 
-    Tries FalkorDB's native `algo.pageRank` first. Some falkordb:latest builds
-    yield zero rows from that procedure (verified on this dataset), so the tool
-    falls back to an in-process power iteration over the same graph — the
-    `engine` field always says which one produced the answer.
+    Uses FalkorDB's native `algo.pageRank(<label|null>, <reltype|null>)`. If a build
+    does not expose the procedure, the tool falls back to an in-process power
+    iteration over the same graph — the `engine` field always says which one
+    produced the answer.
     """
     top = max(1, min(int(top), 50))
 
     rows: list[Any] = []
     try:
+        # FalkorDB's native procedure is algo.pageRank(<node label|null>, <relationship type|null>).
+        # (Some docs show an (iterations, damping) form; on this build those two numbers are read
+        # as a label/type filter and match nothing — which is why this used to fall back.) We rank
+        # the whole graph and filter to `label` afterwards, so `label='Account'` still means
+        # "accounts that are central to the whole flow", not "accounts ranked inside accounts only".
         rows = db.query(
-            "CALL algo.pageRank(10, 0.85) YIELD node, score "
+            "CALL algo.pageRank(null, null) YIELD node, score "
             "RETURN [coalesce(node.id, node.name), score] AS row"
         )
         engine = "falkordb:algo.pageRank"
@@ -724,22 +729,42 @@ def community_detection(top: int = 8, min_size: int = 2) -> dict:
 
 def centrality(kind: str = "betweenness", top: int = 10, label: str = "") -> dict:
     """Centrality: which nodes bridge (betweenness) or sit closest to all others
-    (harmonic). Use it to find the account every path in the ring runs through."""
-    procedures = {
-        "betweenness": "algo.betweenness",
-        "harmonic": "algo.HarmonicCentrality",
-    }
-    kind = kind if kind in procedures else "betweenness"
-    rows = db.query(
-        f"CALL {procedures[kind]}() YIELD node, score "
-        "RETURN [coalesce(node.id, node.name), score] AS row"
-    )
+    (harmonic). Use it to find the account every path in the ring runs through.
+
+    FalkorDB's betweenness samples 32 source nodes with a *time-based* seed by
+    default, so the ranking changes between runs. We pin `samplingSeed` and set
+    `samplingSize` past the node count, which makes the procedure use every
+    source node — an exact, reproducible Brandes ranking (still <0.5s here).
+    """
+    top = max(1, min(int(top), 50))
+    if kind == "harmonic":
+        rows = db.query(
+            "CALL algo.HarmonicCentrality() YIELD node, score "
+            "RETURN [coalesce(node.id, node.name), score] AS row"
+        )
+        engine = "falkordb:algo.HarmonicCentrality"
+    else:
+        kind = "betweenness"
+        try:
+            rows = db.query(
+                "CALL algo.betweenness($config) YIELD node, score "
+                "RETURN [coalesce(node.id, node.name), score] AS row",
+                {"config": {"samplingSize": 1_000_000, "samplingSeed": 42}},
+            )
+            engine = "falkordb:algo.betweenness (exact, samplingSeed=42)"
+        except Exception:
+            # Older builds only accept the bare call (sampled, non-reproducible).
+            rows = db.query(
+                "CALL algo.betweenness() YIELD node, score "
+                "RETURN [coalesce(node.id, node.name), score] AS row"
+            )
+            engine = "falkordb:algo.betweenness (default sampling)"
     return {
         "algorithm": kind,
-        "engine": f"falkordb:{procedures[kind]}",
+        "engine": engine,
         "label": label or "any",
         "nodes_ranked": len(rows),
-        "top": _ranked_rows(rows, label, max(1, min(int(top), 50))),
+        "top": _ranked_rows(rows, label, top),
     }
 
 
@@ -977,11 +1002,39 @@ def flag_account(account_id: str, severity: str, reason: str, case_id: str = "")
     }
 
 
+def _next_case_id() -> str:
+    """Allocate the next free case id, safely under concurrency.
+
+    A plain `count(cases) + 1` is racy: two concurrent agents can read the same
+    count and both claim the same id (Track 02 cares about high-concurrency
+    writes). FalkorDB executes one statement atomically, so the id comes from a
+    counter node incremented there. The counter bootstraps itself from the number
+    of existing cases the first time it runs, so numbering continues exactly as
+    before (after the seed's `CASE-0001`, the next case is `CASE-0002`). The
+    existence check afterwards only matters if case ids are non-contiguous (a
+    deleted case); it never fires in the normal path.
+    """
+    for _ in range(50):
+        rows = db.query(
+            """
+            MATCH (c:Case)
+            WITH count(c) AS existing
+            MERGE (k:Counter {name: 'case_id'})
+            ON CREATE SET k.value = existing
+            SET k.value = k.value + 1
+            RETURN k.value AS row
+            """
+        )
+        candidate = f"CASE-{int(rows[0]):04d}" if rows else "CASE-0001"
+        taken = db.query("MATCH (c:Case {id: $id}) RETURN c.id AS row LIMIT 1", {"id": candidate})
+        if not taken:
+            return candidate
+    return f"CASE-{uuid.uuid4().hex[:6]}"  # vanishingly unlikely fallback
+
+
 def open_case(title: str, summary: str = "", entity_ids: list[str] | None = None) -> dict:
     """Action: open an investigation case in the graph and attach the entities involved."""
-    rows = db.query("MATCH (c:Case) RETURN count(c) AS row")
-    existing = int(rows[0]) if rows else 0
-    case_id = f"CASE-{existing + 1:04d}"
+    case_id = _next_case_id()
 
     db.query(
         "CREATE (c:Case {id: $id, title: $title, summary: $summary, status: 'open', "

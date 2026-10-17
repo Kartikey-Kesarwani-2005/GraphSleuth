@@ -96,9 +96,11 @@ def detect_suspicious_cluster(min_signals: int = 2, top: int = 5) -> str:
     return _call("detect_suspicious_cluster", min_signals=min_signals, top=top)
 
 
-@server.tool(description="Shortest chain of relationships between two entities (BFS), for explaining how they are linked.")
-def shortest_connection(id_a: str, id_b: str, max_depth: int = 6) -> str:
-    return _call("shortest_connection", id_a=id_a, id_b=id_b, max_depth=max_depth)
+@server.tool(description="Shortest chain of relationships between two entities (BFS), for explaining how they are linked. Pass `via` to follow only certain relationship types (e.g. ['ORIGINATED','DESTINED'] for a money-only chain).")
+def shortest_connection(
+    id_a: str, id_b: str, max_depth: int = 6, via: list[str] | None = None
+) -> str:
+    return _call("shortest_connection", id_a=id_a, id_b=id_b, max_depth=max_depth, via=via or [])
 
 
 @server.tool(description="Read-only Cypher escape hatch. Only MATCH/OPTIONAL MATCH/RETURN/WITH/CALL/UNWIND/SHOW/EXPLAIN.")

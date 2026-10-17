@@ -38,31 +38,40 @@ typed relationships, never flat rows.
   device-sharing noise (on the seeded data: 1 real 6-account ring, 4 false clusters dropped).
 * **Remember across sessions** — episodic (`Session`/`Message`), semantic and procedural memory as
   `MemoryNote` nodes linked to entities via `:ABOUT`. A second session starts with a briefing
-  built from the graph: open cases, past findings, the playbook it learned earlier.
+  built from the graph: open cases, past findings, the playbook it learned earlier. Finished
+  investigations distil their own tool sequence into a reusable **playbook** (procedural memory),
+  de-duplicated and capped per tenant.
 * **Share state between agents** — `python -m graphsleuth pipeline` runs **Triage → Investigator**:
   triage writes its verdict, context and entity ids into a `Handoff` node; the investigator's very
   first calls are `list_handoffs` / `accept_handoff`, and it continues from what the graph holds.
-  No state is pasted through the caller — FalkorDB is the only channel.
+  No state is pasted through the caller — FalkorDB is the only channel. Add `--verify` for a third **GraphSleuth-Verifier** agent that treats the verdict adversarially: it re-derives the investigator's claims from the graph itself and returns CONFIRMED / WEAK / REFUTED with any discrepancies. A verification that can only agree is worthless, so it is told to try to break the case.
 * **Separate memory per tenant** — multigraph topology: every tenant gets its own graph
   (`graphsleuth:default`, `graphsleuth:acme`). Isolation is structural, not a WHERE clause — a
   canary note in tenant `acme` is invisible from `default` even under raw Cypher.
 * **Show the path behind an answer** — every report ships an evidence chain with ids and
   relationship types, a compact graph path, the tools used, the actions taken, and a confidence
-  rating with what is still missing.
+  rating with what is still missing. A zero-dependency **web console** (`python -m graphsleuth serve`)
+  streams each tool call live and grows the graph as the agent works.
 * **Tool selection through MCP** — the same 20 tools are served over MCP stdio
   (`python -m graphsleuth.mcp_server`), so Claude Desktop or any MCP client gets the identical
-  graph toolbelt (verified: initialize → 20 tools → live calls).
+  graph toolbelt (verified: initialize → 20 tools → live calls; an offline test asserts the MCP
+  parameters match the built-in toolbelt exactly).
 
 **Measured on the judges' own terms (verified live, not aspirational):** seed 1702 nodes / 2713
 relationships; demo 11/11 tool calls ok; ring score 41.05 with 6 members; 6-hop money path from
 `ACC-EXT-01` to the collector `ACC-9100`; pipeline handoff created → accepted and case opened;
-20-thread concurrency bench 2307 ops in 4 s (575 ops/s, reads p95 71 ms, writes p95 82 ms, 0
-errors); MCP client sees all 20 tools; 15/15 offline tests pass.
+`eval` 11/11 checks pass; 20-thread concurrency bench 2307 ops in 4 s (575 ops/s, reads p95 71 ms,
+writes p95 82 ms, 0 errors); MCP client sees all 20 tools; 23/23 offline tests pass. Run
+`python -m graphsleuth eval` to reproduce the scorecard yourself.
 
 **Honest engineering notes:** FalkorDB's `ORDER BY` needed the `WITH … ORDER BY … LIMIT … RETURN`
-pattern in memory queries (found by running it live); native `algo.pageRank` returns 0 rows on the
-current `falkordb:latest` build, so the `page_rank` tool tries the procedure first and falls back
-to an in-process power iteration, always reporting which engine produced the answer.
+pattern in memory queries (found by running it live). And `algo.pageRank` takes
+`(nodeLabel, relationshipType)` — not `(iterations, damping)`; passing two numbers makes it match
+nothing, which is why an early build of this project thought the procedure was broken. We now call
+`algo.pageRank(null, null)` natively and filter by label afterwards. Likewise `algo.betweenness`
+samples source nodes with a time-based seed by default; the tool pins `samplingSeed=42` and raises
+`samplingSize` past the node count for an exact, reproducible ranking. Every algorithm result reports
+the `engine` that produced it.
 
 **Try it:** `powershell -ExecutionPolicy Bypass -File .\setup.ps1` (venv → deps → Docker →
 FalkorDB → seed → demo), then put a free `GROQ_API_KEY` in `.env` and re-run — the real model
@@ -74,14 +83,17 @@ takes over the loop. Repo: https://github.com/Kartikey-Kesarwani-2005/GraphSleut
 
 Enter primarily in **Track 01 — Agents That Act on Connected Data** (multi-hop reasoning, graph
 queries/algorithms as tools, tool selection through MCP, explainable results). It also covers
-Track 02 (episodic/semantic/procedural memory, handoffs between agents, high-concurrency
-reads/writes, per-tenant memory) and demonstrates Track 03's pattern (every answer traced back to
-source entities).
+Track 02 (episodic/semantic/procedural memory, playbook learning, handoffs between agents — plus an
+adversarial verifier agent, high-concurrency reads/writes, per-tenant memory) and Track 03 as a
+dedicated second graph: `python -m graphsleuth company` (people, teams, projects, systems, docs,
+tickets, chats, decisions) answers *who knows a system*, *who owns it*, *what breaks if it goes
+down*, *why a decision was made* (traced to source), and *what's going stale* — every answer names
+its source nodes (`demos/COMPANY_BRAIN.md`).
 
 ## Gallery / links to include
 
 * `demos/EXAMPLE_REPORT.md` — full investigation report from a real run
-* `demos/PIPELINE_REPORT.md` — two-agent run: triage verdict → handoff → investigator verdict
+* `demos/PIPELINE_REPORT.md` — multi-agent run: triage verdict → handoff → investigator → verifier
 * `demos/DEMO_SCRIPT.md` — judged walkthrough with expected outputs
 * `docs/BLOG_POST.md` — blog post for the side prize
 * `docs/SUBMISSION.md` — verification table with measured numbers
