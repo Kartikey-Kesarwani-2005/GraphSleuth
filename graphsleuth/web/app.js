@@ -299,18 +299,20 @@ function step(tool, argsText, resText, cls) {
   $("steps").scrollTop = 99999;
 }
 
-async function investigate(target, tenant, offline, mode) {
+async function investigate(target, tenant, offline, mode, question) {
   $("steps").innerHTML = "";
   $("verdict").classList.add("hidden");
   $("empty").classList.add("hidden");
-  nodes.clear(); edges.length = 0; ring.clear(); focal = target;
+  nodes.clear(); edges.length = 0; ring.clear(); focal = target || question || (mode === "company" ? "SYS-ledger-db" : "ACC-9003");
   document.querySelector("#controls button").disabled = true;
   $("rounds").textContent = "";
 
+  const payload = { target: target || question || focal, tenant: tenant || (mode === "company" ? "company" : "default"), offline, mode };
+  if (mode === "company" && question) payload.question = question;
   const res = await fetch("/api/investigate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target, tenant, offline, mode }),
+    body: JSON.stringify(payload),
   });
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -410,15 +412,23 @@ function applyMode() {
   $("target").placeholder = company ? "SYS-ledger-db" : "ACC-9003";
   $("tenant").value = company ? "company" : "default";
   document.querySelector("#controls button").textContent = company ? "Ask the company brain" : "Investigate";
+  const q = $("question");
+  if (q) {
+    q.classList.toggle("hidden", !company);
+    if (!company) q.value = "";
+  }
 }
 $("mode").addEventListener("change", applyMode);
 
 $("controls").addEventListener("submit", (e) => {
   e.preventDefault();
   const mode = $("mode").value;
-  const target = $("target").value.trim() || (mode === "company" ? "SYS-ledger-db" : "ACC-9003");
-  const tenant = $("tenant").value.trim();
-  investigate(target, tenant, $("offline").checked, mode).catch((err) => step("stream", "", String(err), "error"));
+  const company = mode === "company";
+  const q = company ? ($("question").value || "").trim() : "";
+  const target = company ? (q || $("target").value.trim() || "SYS-ledger-db") : ($("target").value.trim() || "ACC-9003");
+  const tenant = company ? ($("tenant").value.trim() || "company") : ($("tenant").value.trim() || "default");
+  if (company && $("tenant").value.trim() === "") $("tenant").value = "company";
+  investigate(target, tenant, $("offline").checked, mode, q).catch((err) => step("stream", "", String(err), "error"));
 });
 
 resize();

@@ -591,11 +591,15 @@ def test_web_console_offers_company_mode() -> None:
     html = (server.WEB_DIR / "index.html").read_text(encoding="utf-8")
     js = (server.WEB_DIR / "app.js").read_text(encoding="utf-8")
     assert 'value="company"' in html  # the mode selector exists
+    assert 'id="question"' in html  # free-text org question box ships with it
     assert "mode" in js and "who_knows" in js  # org tool results grow the canvas
+    assert "question" in js  # the console sends the company question
     import inspect
 
     src = inspect.getsource(server.Handler._sse_stream)
     assert 'mode == "company"' in src  # the server actually branches on it
+    post = inspect.getsource(server.Handler.do_POST)
+    assert 'body.get("question")' in post  # the server honours a free-text org question
 
 
 if __name__ == "__main__":
