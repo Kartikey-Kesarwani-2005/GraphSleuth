@@ -157,7 +157,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _sse_stream(self, target: str, tenant: str, question: str, offline: bool) -> None:
+    def _sse_stream(self, target: str, tenant: str, question: str, offline: bool, mode: str = "fraud") -> None:
         """Stream the agent's live tool calls as newline-delimited JSON."""
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
@@ -173,14 +173,27 @@ class Handler(BaseHTTPRequestHandler):
         def worker() -> None:
             try:
                 with db.tenant_scope(tenant):
-                    agent = GraphSleuth(
-                        tenant=tenant,
-                        verbose=False,
-                        on_event=on_event,
-                        brain=build_demo_brain(target) if offline else None,
-                        scripted=build_demo_brain(target),
-                    )
-                    result = agent.ask(question)
+                    if mode == "company":
+                        # Track 03: the company-brain agent (org tools, org prompt).
+                        from . import company
+
+                        company.ensure_seeded()  # a judge can ask without running the CLI
+                        result = company.chat(
+                            question,
+                            tenant=tenant,
+                            verbose=False,
+                            on_event=on_event,
+                            offline=offline,
+                        )
+                    else:
+                        agent = GraphSleuth(
+                            tenant=tenant,
+                            verbose=False,
+                            on_event=on_event,
+                            brain=build_demo_brain(target) if offline else None,
+                            scripted=build_demo_brain(target),
+                        )
+                        result = agent.ask(question)
                 events.put(_result_payload(result))
             except Exception as exc:  # noqa: BLE001 - stream the error to the UI
                 events.put({"type": "error", "error": f"{type(exc).__name__}: {exc}"})
@@ -234,11 +247,17 @@ class Handler(BaseHTTPRequestHandler):
         if urlparse(self.path).path != "/api/investigate":
             self._send_json({"error": "not found"}, 404)
             return
-        target = str(body.get("target") or "ACC-9003").strip()
-        tenant = str(body.get("tenant") or "").strip()
-        question = str(body.get("question") or f"Investigate {target} — is this account part of a fraud ring?")
+        mode = str(body.get("mode") or "fraud").strip().lower()
+        if mode == "company":
+            target = str(body.get("target") or "SYS-ledger-db").strip()
+            tenant = str(body.get("tenant") or "company").strip()
+            question = str(body.get("question") or f"Who knows {target}, and what breaks if it goes down?")
+        else:
+            target = str(body.get("target") or "ACC-9003").strip()
+            tenant = str(body.get("tenant") or "").strip()
+            question = str(body.get("question") or f"Investigate {target} — is this account part of a fraud ring?")
         try:
-            self._sse_stream(target, tenant, question, bool(body.get("offline")))
+            self._sse_stream(target, tenant, question, bool(body.get("offline")), mode)
         except (BrokenPipeError, ConnectionResetError):
             return
 

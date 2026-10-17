@@ -1,5 +1,11 @@
 # 🕵️ GraphSleuth
 
+[![CI](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml/badge.svg)](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![Tests](https://img.shields.io/badge/tests-27%20passing-brightgreen)
+![MCP](https://img.shields.io/badge/MCP-26%20tools-8A2BE2)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 **A fraud investigation agent whose context layer is FalkorDB.**
 
 GraphSleuth doesn't look up records — it follows relationships. Ask it about one suspicious
@@ -36,7 +42,7 @@ and it can prove every hop with the tool call that produced it.
   question ───▶ │  GraphSleuth agent loop                        │
                 │  memory briefing ─▶ LLM ─▶ tool call ─▶ result │
                 └───────────────────────┬────────────────────────┘
-                                        │ 20 tools
+                                        │ 26 tools
                     ┌───────────────────┴────────────────────┐
                     ▼                                        ▼
         read tools (reason over the graph)      write tools (act on the graph)
@@ -145,6 +151,7 @@ the graph and runs the demo — one command from a fresh clone.
 | `python -m graphsleuth memory` | inspect the agent's memory: learned playbooks, notes and open cases for a tenant; `--kind episodic\|semantic\|procedural` filters |
 | `python -m graphsleuth serve` | interactive web console: streams the investigation live and grows the graph as it runs (`--port`, `--host`) |
 | `python -m graphsleuth company` | **Track 03 — Company Brain:** seed a second graph (people, teams, projects, systems, docs, tickets, chats, decisions) and tour six questions — who knows a system, who owns it, what breaks if it goes down, why a decision was made (traced to source), what we know (docs · tickets · chats), and what's going stale (`--system`, `--decision`, `--save`) |
+| `python -m graphsleuth company-chat "who knows SYS-ledger-db?"` | **Track 03 as an agent:** ask an org question and the LLM picks the company tools itself, answering with node ids as citations (`--offline` runs the scripted brain, `--keep` reuses the graph, `--save` writes the answer) |
 | `python -m graphsleuth chat` | interactive session; drives a live model when a key is set (Groq/OpenAI-compatible), else the offline fallback |
 
 ### LLM modes
@@ -218,7 +225,8 @@ A real live run where `120b` ran dry mid-investigation and `20b` finished it is 
 
 ## MCP: the toolbelt is shared infrastructure
 
-`graphsleuth/mcp_server.py` exposes all twenty tools over MCP (stdio), so any MCP client —
+`graphsleuth/mcp_server.py` exposes all twenty-six tools over MCP (stdio) — the twenty fraud
+tools plus the six company-brain tools — so any MCP client —
 Claude Desktop, an IDE agent, another agent on the team — works against the same graph:
 
 ```json
@@ -237,7 +245,7 @@ Claude Desktop, an IDE agent, another agent on the team — works against the sa
 }
 ```
 
-Verified with a real MCP stdio client: `initialize` OK, `tools: 20`, and live `entity_search` /
+Verified with a real MCP stdio client: `initialize` OK, `tools: 26`, and live `entity_search` /
 `detect_suspicious_cluster` calls returned graph data. `GRAPHSLEUTH_TENANT` selects which tenant
 graph the server process talks to (one graph per process — see
 [Multigraph tenancy](#multigraph-tenancy-one-graph-per-tenant)).
@@ -345,7 +353,7 @@ the whole `graphsleuth:acme` graph, canary included.
 
 ## Graph algorithms as agent tools
 
-Four of the twenty tools are graph algorithms the model can call like any other tool. They run as
+Four of the fraud tools are graph algorithms the model can call like any other tool. They run as
 **native FalkorDB procedures**:
 
 | Tool | FalkorDB procedure | Verified output (fresh seed, reproducible) |
@@ -412,7 +420,9 @@ Verified offline run (`demos/PIPELINE_REPORT.md`, produced by `seed` → `demo` 
   real tool trace — so the report says what actually ran, not just what the model claims.
 
 A **real-model** version of the same pipeline (both brains `groq:openai/gpt-oss-120b`) is committed
-at [`demos/LIVE_RUN.md`](demos/LIVE_RUN.md).
+at [`demos/LIVE_RUN.md`](demos/LIVE_RUN.md), and a **three-agent** real-model run — triage →
+handoff → investigator → adversarial verifier, which returned **CONFIRMED** with no discrepancies —
+is committed at [`demos/LIVE_RUN_3AGENT.md`](demos/LIVE_RUN_3AGENT.md).
 
 ---
 
@@ -449,6 +459,19 @@ The committed tour is [`demos/COMPANY_BRAIN.md`](demos/COMPANY_BRAIN.md). The gr
 (no RNG), so every number reproduces; `tests/test_offline.py` checks the dataset for referential
 integrity, a real dependency chain, a superseded decision, and a source on every decision — with no
 database needed.
+
+**It is also an agent, not just a scripted tour.** The six questions are real tools in the shared
+registry (`who_knows`, `owners_of`, `blast_radius`, `decision_trail`, `knowledge_sources`,
+`stale_knowledge`), exposed over MCP and selectable by the model:
+
+```powershell
+python -m graphsleuth company-chat "who knows SYS-ledger-db, and what breaks if it goes down?"
+python -m graphsleuth company-chat --offline "why did we decide ADR-002?"   # scripted brain, no key
+```
+
+The agent answers in an **Answer / Evidence / Sources / Confidence** format that cites node ids
+(e.g. `EMP-001`, `DOC-002`, `TKT-102`), and the web console has a **Company brain** mode that runs
+the same agent and grows the org graph live — no CLI needed.
 
 Two FalkorDB quirks surfaced here and are handled in the queries: `count(*)` can collapse rows
 (so the "who knows" query counts a bound variable, `count(pr)`), and the `ORDER BY` scoping rule
@@ -517,10 +540,11 @@ Selected output (copied from the report):
   **Actions taken (verified from the tool log)** section lists exactly these — from the trace.
 * **Cross-session memory:** running `demo` a second time, step 1's `recall` returns the first run's
   own conclusion — proof that state lives in the graph, not the process.
-* **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 20 tools and
-  gets live graph data back (`tools: 20`; live `entity_search` + `detect_suspicious_cluster` calls).
-* **Tests:** `tests/test_offline.py` → 23/23 pass (no database required; includes an MCP/agent
-  toolbelt parity check); `compileall` clean.
+* **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 26 tools and
+  gets live graph data back (`tools: 26`; live `entity_search` + `detect_suspicious_cluster` calls).
+* **Tests:** `tests/test_offline.py` → 27/27 pass (no database required; includes an MCP/agent
+  toolbelt parity check and company-brain tests); `compileall` clean. CI runs the suite and a real
+  FalkorDB end-to-end job on every push.
 
 > Run ids (`AL-…`, `NOTE-…`, `MEM-…`, `HANDOFF-…`) are generated per run, so they differ between
 > runs; the committed report files are the source of truth for any specific id.
@@ -536,7 +560,7 @@ notes, so the node count grows past the seed's 1702 — visible with `python -m 
 |---|---|
 | **01 — Act on connected data** | Multi-hop reasoning over accounts/devices/transactions; native graph algorithms as tools (`algo.WCC`, `algo.labelPropagation`, exact betweenness / harmonic centrality, native `algo.pageRank`); union-find clustering over shared-device links with beneficiary-collector corroboration; BFS pathfinding with an optional relationship filter; Cypher as a read-only tool; actions (alert, case) driven by graph evidence; full evidence trail + Mermaid path |
 | **02 — Memory & coordination** | Episodic (`Session`/`Message`), semantic and procedural (`MemoryNote`) memory persisted in the graph; memory briefing before every question; **playbooks distilled from finished investigations and reused**; agents coordinate through `Handoff` nodes written to the shared graph (triage → investigator, optionally → an adversarial **verifier**, no caller-pasted context); cases/alerts/notes are shared state any agent (or MCP client) can pick up; one FalkorDB graph per tenant (topological isolation); concurrency benchmark + `eval` scorecard |
-| **03 — Company brain** | A dedicated second graph (`python -m graphsleuth company`, tenant `company`): people, teams, projects, systems, docs, tickets, chats and decisions in one FalkorDB graph. It answers the brief's six questions — **who knows a system** (the brief's exact `Person-[:WORKED_ON]->Project-[:USES]->System` query, ranked, plus declared `:KNOWS` experts), **who owns what**, **what breaks if a service goes down** (reverse transitive `:DEPENDS_ON` closure), **why a decision was made** traced to the doc/ticket/chat it was sourced from, **what we know** (docs · tickets · chats, each with a named author), and **what knowledge is going stale** (ageing docs, superseded decisions, bus-factor risk). See [`demos/COMPANY_BRAIN.md`](demos/COMPANY_BRAIN.md). |
+| **03 — Company brain** | A dedicated second graph (`python -m graphsleuth company`, tenant `company`): people, teams, projects, systems, docs, tickets, chats and decisions in one FalkorDB graph. It answers the brief's six questions — **who knows a system** (the brief's exact `Person-[:WORKED_ON]->Project-[:USES]->System` query, ranked, plus declared `:KNOWS` experts), **who owns what**, **what breaks if a service goes down** (reverse transitive `:DEPENDS_ON` closure), **why a decision was made** traced to the doc/ticket/chat it was sourced from, **what we know** (docs · tickets · chats, each with a named author), and **what knowledge is going stale** (ageing docs, superseded decisions, bus-factor risk). Beyond the scripted tour it also ships as an **agent** (`python -m graphsleuth company-chat`) whose six tools are in the shared MCP toolbelt, and as a **web-console mode**. See [`demos/COMPANY_BRAIN.md`](demos/COMPANY_BRAIN.md). |
 
 ---
 
@@ -548,8 +572,8 @@ GraphSleuth/
 │  ├─ config.py        # env config (FalkorDB + LLM)
 │  ├─ db.py            # the only module that talks to FalkorDB (multigraph tenancy)
 │  ├─ seed.py          # synthetic fraud network + baseline memory
-│  ├─ company.py       # Track 03: company-brain graph + tour (`company`)
-│  ├─ tools.py         # the 20 graph tools (reads, algorithms, handoffs, writes)
+│  ├─ company.py       # Track 03: company-brain graph, tour + agent (`company`, `company-chat`)
+│  ├─ tools.py         # the 26 graph tools (20 fraud reads/algorithms/writes + 6 company-brain)
 │  ├─ memory.py        # episodic / semantic / procedural memory
 │  ├─ llm.py           # live (Groq / OpenAI-compatible) + offline fallback brains
 │  ├─ agent.py         # the investigation loop + system prompt
@@ -557,15 +581,18 @@ GraphSleuth/
 │  ├─ evaluate.py      # reproducible evaluation scorecard (`eval`)
 │  ├─ bench.py         # concurrency benchmark
 │  ├─ explain.py       # evidence trail + Mermaid path rendering
-│  ├─ cli.py           # status / seed / demo / pipeline / bench / eval / memory / company / serve / chat
+│  ├─ cli.py           # status / seed / demo / pipeline / bench / eval / memory / company / company-chat / serve / chat
 │  ├─ server.py        # zero-dependency web console (`serve`): live stream + growing graph
 │  ├─ web/             # the console's single-page app (plain HTML/CSS/JS, no CDN)
-│  └─ mcp_server.py    # the same 20 tools over MCP (stdio)
+│  └─ mcp_server.py    # the same 26 tools over MCP (stdio)
 ├─ tests/              # offline unit tests (no database needed)
 ├─ demos/              # demo script + saved reports
-├─ docs/               # submission notes
+├─ docs/               # submission notes + why-graph comparison
+├─ .github/workflows/  # CI: offline tests + FalkorDB end-to-end
 ├─ data/falkordb/      # graph storage (bind-mounted from the container)
-├─ docker-compose.yml  # FalkorDB
+├─ docker-compose.yml  # FalkorDB (and an optional `app` service: --profile app)
+├─ Dockerfile          # the agent + web console image (optional)
+├─ LICENSE             # MIT
 ├─ setup.ps1
 └─ requirements.txt
 ```
@@ -591,6 +618,10 @@ this one folder. The only machine-wide pieces are Docker Desktop itself and the 
   accounts on their own, so they only *attach* a collector to a cluster. The same discipline applies
   to `shortest_connection` — `via=["ORIGINATED","DESTINED"]` follows money only instead of letting
   the path cut through an unrelated case node.
+* **The storage engine speaks paths.** Every question here is "how are these connected?" at an
+  unknown depth — a traversal, not a scan or a similarity search. [`docs/WHY_GRAPH.md`](docs/WHY_GRAPH.md)
+  makes that concrete (the dependency closure as one Cypher pattern vs a recursive CTE, and why a
+  vector store cannot answer "is this account in a ring?").
 * **FalkorDB-specific Cypher quirks are handled:** its `ORDER BY` can only reference variables that
   are projected or grouped in that scope, so every sorting query goes through
   `WITH … ORDER BY … LIMIT … RETURN`. The seed and all read tools were run against a live

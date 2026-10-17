@@ -2,7 +2,8 @@
 
 Any MCP-capable client — Claude Desktop, an IDE agent, another agent in your
 team — can connect to this server and get the whole graph toolbelt: the same
-twenty tools the built-in agent uses, backed by the same FalkorDB graph and the
+twenty-six tools the built-in agents use (20 fraud-investigation tools plus 6
+company-brain tools for Track 03), backed by the same FalkorDB graph and the
 same memory. That is what makes the graph a *shared* context layer rather than
 one agent's private data.
 
@@ -60,7 +61,11 @@ server = MCPServer(
         "Start with entity_search or recall, follow connections with graph_neighbors / "
         "trace_money_flow / find_shared_links, rank with page_rank / centrality / "
         "connected_components / community_detection, hand work over with create_handoff / "
-        "list_handoffs / accept_handoff, and use run_cypher for anything else (read-only)."
+        "list_handoffs / accept_handoff, and use run_cypher for anything else (read-only). "
+        "For company-brain (Track 03) questions — who knows a system, who owns it, what breaks "
+        "if it goes down, why a decision was made, what we know, what's stale — use who_knows / "
+        "owners_of / blast_radius / decision_trail / knowledge_sources / stale_knowledge against "
+        "an org graph (tenant 'company')."
     ),
 )
 
@@ -184,6 +189,39 @@ def list_handoffs(status: str = "pending", limit: int = 5) -> str:
 @server.tool(description="ACTION: claim a handoff — marks it accepted and returns the full context.")
 def accept_handoff(handoff_id: str) -> str:
     return _call("accept_handoff", handoff_id=handoff_id)
+
+
+# --- Track 03 company-brain tools (org graph: people/teams/projects/systems/docs/tickets/chats/decisions) ---
+
+
+@server.tool(description="Track 03: who knows about a system — people who worked on projects that use it (ranked), plus declared experts.")
+def who_knows(system_id: str) -> str:
+    return _call("who_knows", system_id=system_id)
+
+
+@server.tool(description="Track 03: who owns a system or project, and the teammates reachable from that owner.")
+def owners_of(entity_id: str) -> str:
+    return _call("owners_of", entity_id=entity_id)
+
+
+@server.tool(description="Track 03: what breaks if a system goes down — reverse transitive :DEPENDS_ON closure (systems, projects, teams).")
+def blast_radius(system_id: str) -> str:
+    return _call("blast_radius", system_id=system_id)
+
+
+@server.tool(description="Track 03: why a decision was made — who decided, what it affects, the doc/ticket/chat source, and what it supersedes.")
+def decision_trail(decision_id: str) -> str:
+    return _call("decision_trail", decision_id=decision_id)
+
+
+@server.tool(description="Track 03: every doc, ticket and chat about a system, each with a named author.")
+def knowledge_sources(system_id: str) -> str:
+    return _call("knowledge_sources", system_id=system_id)
+
+
+@server.tool(description="Track 03: what knowledge is going stale — ageing docs, superseded decisions, and bus-factor risk.")
+def stale_knowledge(stale_days: int = 180) -> str:
+    return _call("stale_knowledge", stale_days=stale_days)
 
 
 def main() -> None:

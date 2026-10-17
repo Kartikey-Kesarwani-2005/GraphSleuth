@@ -52,16 +52,17 @@ typed relationships, never flat rows.
   relationship types, a compact graph path, the tools used, the actions taken, and a confidence
   rating with what is still missing. A zero-dependency **web console** (`python -m graphsleuth serve`)
   streams each tool call live and grows the graph as the agent works.
-* **Tool selection through MCP** — the same 20 tools are served over MCP stdio
+* **Tool selection through MCP** — the same 26 tools (20 fraud + 6 company-brain) are served over
+  MCP stdio
   (`python -m graphsleuth.mcp_server`), so Claude Desktop or any MCP client gets the identical
-  graph toolbelt (verified: initialize → 20 tools → live calls; an offline test asserts the MCP
+  graph toolbelt (verified: initialize → 26 tools → live calls; an offline test asserts the MCP
   parameters match the built-in toolbelt exactly).
 
 **Measured on the judges' own terms (verified live, not aspirational):** seed 1702 nodes / 2713
 relationships; demo 11/11 tool calls ok; ring score 41.05 with 6 members; 6-hop money path from
 `ACC-EXT-01` to the collector `ACC-9100`; pipeline handoff created → accepted and case opened;
 `eval` 11/11 checks pass; 20-thread concurrency bench 2307 ops in 4 s (575 ops/s, reads p95 71 ms,
-writes p95 82 ms, 0 errors); MCP client sees all 20 tools; 23/23 offline tests pass. Run
+writes p95 82 ms, 0 errors); MCP client sees all 26 tools; 27/27 offline tests pass. Run
 `python -m graphsleuth eval` to reproduce the scorecard yourself.
 
 **Honest engineering notes:** FalkorDB's `ORDER BY` needed the `WITH … ORDER BY … LIMIT … RETURN`
@@ -88,12 +89,17 @@ adversarial verifier agent, high-concurrency reads/writes, per-tenant memory) an
 dedicated second graph: `python -m graphsleuth company` (people, teams, projects, systems, docs,
 tickets, chats, decisions) answers *who knows a system*, *who owns it*, *what breaks if it goes
 down*, *why a decision was made* (traced to source), and *what's going stale* — every answer names
-its source nodes (`demos/COMPANY_BRAIN.md`).
+its source nodes (`demos/COMPANY_BRAIN.md`). Track 03 is agentic too: the same six questions are
+tools in the shared 26-tool MCP belt (`python -m graphsleuth company-chat "who knows SYS-ledger-db?"`)
+and a web-console mode. For the "why a graph, not SQL/vector" argument, see `docs/WHY_GRAPH.md`.
 
 ## Gallery / links to include
 
 * `demos/EXAMPLE_REPORT.md` — full investigation report from a real run
 * `demos/PIPELINE_REPORT.md` — multi-agent run: triage verdict → handoff → investigator → verifier
+* `demos/LIVE_RUN_3AGENT.md` — the same pipeline driven by a real model (3 agents, verdict CONFIRMED)
+* `demos/COMPANY_BRAIN.md` — Track 03 org-graph tour (who knows / owns / depends / decided / stale)
+* `docs/WHY_GRAPH.md` — why this is a graph problem, not SQL or vector
 * `demos/DEMO_SCRIPT.md` — judged walkthrough with expected outputs
 * `docs/BLOG_POST.md` — blog post for the side prize
 * `docs/SUBMISSION.md` — verification table with measured numbers

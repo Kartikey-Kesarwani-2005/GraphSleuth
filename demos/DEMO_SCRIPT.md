@@ -182,6 +182,10 @@ Click **Investigate** and point at the stream: each tool call appears the moment
 it, and the graph on the canvas grows as entities are discovered. Switch the tenant box to show a
 different graph on the same FalkorDB instance; untick "live model" to run the offline brain.
 
+> **Same console, second mode.** Set the mode dropdown to **Company brain · Track 03**, type
+> `SYS-ledger-db`, and press **Ask the company brain** — the agent picks the org tools itself and the
+> canvas grows with people, systems, docs and decisions.
+
 ## 7d. Company brain — Track 03 (30s)
 
 ```powershell
@@ -200,6 +204,16 @@ names its sources:
 * **why a decision was made** — traced via `:SOURCED_FROM` to the doc/ticket/chat that caused it;
 * **what we know, and where from** — docs · tickets · chats in one graph, each with its author;
 * **what's going stale** — ageing docs, a superseded decision, and bus-factor risk.
+
+> "It is not just a scripted tour — the six questions are real tools in the same MCP toolbelt, so
+> the agent can pick them itself:"
+
+```powershell
+.\.venv\Scripts\python.exe -m graphsleuth company-chat --offline "who knows SYS-ledger-db?"
+```
+
+The answer comes back as **Answer / Evidence / Sources / Confidence**, every claim carrying its node
+ids (`EMP-001`, `DOC-002`, `TKT-102`).
 
 > "Same FalkorDB, same pattern, different domain. The fraud graph asks *is this account in a ring?*;
 > the company graph asks *who knows this service, and why did we decide that?* — and every answer
@@ -223,9 +237,9 @@ errors  : 0
 
 ## 9. MCP (optional, 20s)
 
-Show the config in `README.md` — all twenty tools over MCP (stdio), so Claude Desktop or a
+Show the config in `README.md` — all twenty-six tools over MCP (stdio), so Claude Desktop or a
 teammate's agent works against the same FalkorDB graph with no extra wiring (`GRAPHSLEUTH_TENANT`
-picks the tenant graph per process). Verified with a real client: `initialize` OK, `tools: 20`.
+picks the tenant graph per process). Verified with a real client: `initialize` OK, `tools: 26`.
 
 ## Talking points
 
@@ -238,5 +252,5 @@ picks the tenant graph per process). Verified with a real client: `initialize` O
   without any caller-pasted context.
 * **Tenancy is a graph boundary.** Each tenant gets its own FalkorDB graph, so isolation is
   structural rather than a `WHERE` clause.
-* **No dead ends.** `run_cypher` is a guarded read-only escape hatch for questions the twenty tools
+* **No dead ends.** `run_cypher` is a guarded read-only escape hatch for questions the twenty-six tools
   don't cover.

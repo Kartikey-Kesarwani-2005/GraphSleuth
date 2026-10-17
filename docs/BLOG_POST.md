@@ -61,17 +61,17 @@ its own, because ordinary transfers share beneficiaries all the time. The demo f
 cluster (mules `ACC-9001…ACC-9005` funnelling into `ACC-9100`, score 41.05) and filters 4 innocent
 device-share clusters as noise. Strong links cluster; weak links corroborate.
 
-**Native algorithms as tools.** Four of the twenty tools are graph algorithms the model can call
+**Native algorithms as tools.** Four of the fraud tools are graph algorithms the model can call
 like any other: `connected_components` (`algo.WCC`), `community_detection`
 (`algo.labelPropagation`), `centrality` (`algo.betweenness` / `algo.HarmonicCentrality`) and
 `page_rank` (`algo.pageRank`). They ran live and reproducibly: label propagation found 181
 communities, WCC found one component of 1,702 nodes, betweenness (exact, pinned seed) put
 `ACC-0084` at the top, and PageRank ranks 1,702 nodes natively.
 
-**Tool selection is the agent's job.** Over MCP, all twenty tools are exposed with the same names,
+**Tool selection is the agent's job.** Over MCP, all twenty-six tools are exposed with the same names,
 schemas and descriptions the built-in agent uses — there is an offline test that asserts the MCP
 parameters match the agent's toolbelt exactly, so the two can't silently drift. A real MCP stdio
-client saw `tools: 20`, initialised cleanly, and got live graph data back from `entity_search` and
+client saw `tools: 26`, initialised cleanly, and got live graph data back from `entity_search` and
 `detect_suspicious_cluster`. A second agent — Claude Desktop, an IDE plugin, a teammate's agent —
 picks up the graph with no extra wiring.
 
@@ -156,6 +156,19 @@ Docs, tickets and chats live in one graph, each edge carrying the author, so an 
 cite where it came from. The dataset is hand-authored and checked offline, so every number in the
 committed tour (`demos/COMPANY_BRAIN.md`) reproduces.
 
+It isn't only a scripted tour: the six questions are real tools in the shared MCP toolbelt, so the
+agent selects them itself (`python -m graphsleuth company-chat "who knows SYS-ledger-db?"`), answers
+with node ids as citations, and the same mode exists in the web console.
+
+## Why a graph at all?
+
+Because every question above is a *path*, not a row or a similarity match. `docs/WHY_GRAPH.md` lays
+the comparison out concretely — the reverse dependency closure as one Cypher pattern versus a
+recursive `WITH RECURSIVE` CTE, and why a vector store cannot answer *"is this account in a ring?"*
+(mule ring members are connected, not similar; ids are exact; the answer needs provenance). The
+short version: vectors are a good *front door* to find the starting node, but the reasoning — and the
+answer — is a traversal.
+
 ## Honest engineering notes
 
 We kept the warts in the repo, because they're more useful than a polished story:
@@ -186,7 +199,7 @@ Everything above was produced against a live `falkordb/falkordb` container:
 * demo: **11/11 tool calls `[ok]`**, cluster score 41.05, 6 hops proved, `CASE-0002` opened;
 * `eval`: **11/11 checks pass** against the live graph (ring precision, money path, algorithms,
   memory round-trip, tenant isolation, procedural learning, explainability, read-only guard);
-* tests: **23/23** offline tests pass (`tests/test_offline.py`), `compileall` clean;
+* tests: **27/27** offline tests pass (`tests/test_offline.py`), `compileall` clean;
 * concurrency: 20 threads for 4 seconds → **2,307 ops (575.3 ops/s), 0 errors**
   (reads 1,956 @ 487.8/s, p50 20.55 ms; writes 351 @ 87.5/s, p50 45.43 ms).
 

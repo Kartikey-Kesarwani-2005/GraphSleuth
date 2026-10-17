@@ -21,6 +21,10 @@
   <main>
     <section class="left">
       <form id="controls">
+        <select id="mode" aria-label="mode">
+          <option value="fraud">Fraud investigation</option>
+          <option value="company">Company brain · Track 03</option>
+        </select>
         <input id="target" value="ACC-9003" spellcheck="false" aria-label="target entity" />
         <input id="tenant" value="default" spellcheck="false" aria-label="tenant" />
         <label class="chk"><input type="checkbox" id="offline" /> offline</label>
@@ -50,6 +54,9 @@
         <span><i class="dot Device"></i>Device</span>
         <span><i class="dot Transaction"></i>Transaction</span>
         <span><i class="dot Alert"></i>Alert</span>
+        <span><i class="dot System"></i>System</span>
+        <span><i class="dot Person"></i>Person</span>
+        <span><i class="dot Doc"></i>Doc / Ticket</span>
         <span class="hint">drag to pan · scroll to zoom</span>
       </div>
     </section>

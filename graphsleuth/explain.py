@@ -116,6 +116,99 @@ def _facts_into(entry: dict, nodes: dict[str, str], edges: list[tuple[str, str, 
                 account = str(member.get("account") or "")
                 add_node(account, "Account")
 
+    # --- Track 03 company-brain tools (org graph) ------------------------- #
+    elif tool == "who_knows":
+        system = str(result.get("system") or "")
+        add_node(system, "System")
+        for person in result.get("people", []) or []:
+            pid = str(person.get("person") or "")
+            add_node(pid, "Person")
+            edges.append((pid, system, "WORKED_ON"))
+        for expert in result.get("declared_experts", []) or []:
+            pid = str(expert.get("person") or "")
+            add_node(pid, "Person")
+            edges.append((pid, system, "KNOWS"))
+
+    elif tool == "owners_of":
+        entity = str(result.get("entity") or "")
+        add_node(entity)
+        first_owner = ""
+        for owner in result.get("owners", []) or []:
+            owner_id = str(owner.get("id") or "")
+            add_node(owner_id, owner.get("kind") or "Team")
+            edges.append((owner_id, entity, "OWNS"))
+            first_owner = first_owner or owner_id
+        for person in result.get("reachable_people", []) or []:
+            pid = str(person.get("person") or "")
+            add_node(pid, "Person")
+            if first_owner:
+                edges.append((pid, first_owner, "MEMBER_OF"))
+
+    elif tool == "blast_radius":
+        system = str(result.get("system") or "")
+        add_node(system, "System")
+        for affected in result.get("affected_systems", []) or []:
+            sid = str(affected.get("id") or "")
+            add_node(sid, "System")
+            edges.append((sid, system, "DEPENDS_ON"))
+        for project in result.get("projects_at_risk", []) or []:
+            pr_id = str(project.get("project") or "")
+            add_node(pr_id, "Project")
+            edges.append((pr_id, system, "AT_RISK"))
+        for team in result.get("teams_at_risk", []) or []:
+            t_id = str(team.get("team") or "")
+            add_node(t_id, "Team")
+            edges.append((t_id, system, "OWNS"))
+
+    elif tool == "decision_trail":
+        if result.get("found"):
+            decision = str(result.get("decision") or "")
+            add_node(decision, "Decision")
+            for person in result.get("decided_by", []) or []:
+                pid = str(person.get("person") or "")
+                add_node(pid, "Person")
+                edges.append((pid, decision, "DECIDED_BY"))
+            for item in result.get("affects", []) or []:
+                sid = str(item.get("system") or "")
+                add_node(sid, "System")
+                edges.append((decision, sid, "AFFECTS"))
+            for source in result.get("sources", []) or []:
+                src = str(source.get("id") or "")
+                add_node(src, source.get("kind") or "Source")
+                edges.append((decision, src, "SOURCED_FROM"))
+            for old in result.get("supersedes", []) or []:
+                old_id = str(old.get("decision") or "")
+                add_node(old_id, "Decision")
+                edges.append((decision, old_id, "SUPERSEDES"))
+
+    elif tool == "knowledge_sources":
+        system = str(result.get("system") or "")
+        add_node(system, "System")
+        for doc in result.get("docs", []) or []:
+            did = str(doc.get("id") or "")
+            add_node(did, "Doc")
+            edges.append((did, system, "ABOUT"))
+        for ticket in result.get("tickets", []) or []:
+            tid = str(ticket.get("id") or "")
+            add_node(tid, "Ticket")
+            edges.append((tid, system, "ABOUT"))
+        for chat in result.get("chats", []) or []:
+            cid = str(chat.get("id") or "")
+            add_node(cid, "Chat")
+            edges.append((cid, system, "MENTIONS"))
+
+    elif tool == "stale_knowledge":
+        for doc in result.get("stale_docs", []) or []:
+            add_node(str(doc.get("id") or ""), "Doc")
+        for pair in result.get("superseded_decisions", []) or []:
+            new_id = str(pair.get("replaced_by") or "")
+            old_id = str(pair.get("old") or "")
+            add_node(new_id, "Decision")
+            add_node(old_id, "Decision")
+            edges.append((new_id, old_id, "SUPERSEDES"))
+        for risk in result.get("bus_factor_risks", []) or []:
+            add_node(str(risk.get("system") or ""), "System")
+
 
 
 def _short(value: Any) -> str:

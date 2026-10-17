@@ -1087,6 +1087,76 @@ def recall(query: str = "", kind: str = "") -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Track 03 — company brain tools
+# --------------------------------------------------------------------------- #
+# Same toolbelt, same tenant model: these read the *org* graph (people, teams,
+# projects, systems, docs, tickets, chats, decisions) of whatever tenant is
+# active. Run `python -m graphsleuth company` to create the demo org graph, and
+# set the tenant to 'company' (the `company-chat` command does this for you).
+# The hackathon's Track 03 questions — who knows / who owns / what breaks / why
+# decided / what do we know / what's stale — are each one graph traversal.
+
+_EMPTY_HINT = (
+    "no company-brain data in this tenant - this tool reads the org graph "
+    "(Person/System/Doc/Ticket/Chat/Decision). Run `python -m graphsleuth company` "
+    "and use tenant 'company'."
+)
+
+
+def _company():
+    from . import company  # local import keeps the fraud toolbelt import-light
+
+    return company
+
+
+def who_knows(system_id: str) -> dict:
+    """Who has worked on things that use this system (ranked) + declared experts."""
+    company = _company()
+    result = company.who_knows(system_id)
+    result["query"] = company.WHO_KNOWS_QUERY
+    if not result.get("people"):
+        result["hint"] = _EMPTY_HINT
+    return result
+
+
+def owners_of(entity_id: str) -> dict:
+    """Who owns a system or project, and the teammates reachable from that owner."""
+    result = _company().owners_of(entity_id)
+    if not result.get("owners"):
+        result["hint"] = _EMPTY_HINT
+    return result
+
+
+def blast_radius(system_id: str) -> dict:
+    """What breaks if this service goes down: reverse transitive :DEPENDS_ON closure."""
+    result = _company().blast_radius(system_id)
+    if not result.get("affected_systems"):
+        result["hint"] = _EMPTY_HINT
+    return result
+
+
+def decision_trail(decision_id: str) -> dict:
+    """Why a decision was made, traced to its doc/ticket/chat source, and what it replaced."""
+    result = _company().decision_trail(decision_id)
+    if not result.get("found"):
+        result["hint"] = _EMPTY_HINT
+    return result
+
+
+def knowledge_sources(system_id: str) -> dict:
+    """Everything written about a system — docs, tickets and chats — each with its author."""
+    result = _company().knowledge_sources(system_id)
+    if not (result.get("docs") or result.get("tickets") or result.get("chats")):
+        result["hint"] = _EMPTY_HINT
+    return result
+
+
+def stale_knowledge(stale_days: int = 180) -> dict:
+    """Keeping knowledge current: ageing docs, superseded decisions, and bus-factor risk."""
+    return _company().stale_knowledge(stale_days)
+
+
+# --------------------------------------------------------------------------- #
 # registry
 # --------------------------------------------------------------------------- #
 # Tools that change state. Reports use this to print a machine-verified
@@ -1121,6 +1191,12 @@ HANDLERS: dict[str, Callable[..., dict]] = {
     "accept_handoff": accept_handoff,
     "remember": remember,
     "recall": recall,
+    "who_knows": who_knows,
+    "owners_of": owners_of,
+    "blast_radius": blast_radius,
+    "decision_trail": decision_trail,
+    "knowledge_sources": knowledge_sources,
+    "stale_knowledge": stale_knowledge,
 }
 
 
@@ -1359,6 +1435,62 @@ TOOL_SPECS: list[dict] = [
         [],
     ),
 ]
+
+
+# --- Track 03 company-brain tools ------------------------------------------- #
+# Exposed to the agent and (via mcp_server) to any MCP client. They read the org
+# graph of the active tenant; the `company-chat` agent runs with tenant='company'.
+COMPANY_TOOL_SPECS: list[dict] = [
+    _spec(
+        "who_knows",
+        "Track 03: who knows about a system. People who worked on projects that USE the system, "
+        "ranked by how many such projects, plus people who explicitly declared expertise. "
+        "Use this to answer 'who knows / who should I ask about <system>'.",
+        {"system_id": {"type": "string", "description": "system id, e.g. SYS-ledger-db"}},
+        ["system_id"],
+    ),
+    _spec(
+        "owners_of",
+        "Track 03: who owns a system or project — the owning person/team, plus the teammates "
+        "reachable from that owner. Use for 'who is responsible for / who owns <thing>'.",
+        {"entity_id": {"type": "string", "description": "system or project id, e.g. SYS-ledger-db"}},
+        ["entity_id"],
+    ),
+    _spec(
+        "blast_radius",
+        "Track 03: what breaks if a service goes down. The reverse transitive :DEPENDS_ON closure "
+        "— affected systems, projects at risk, and the teams that own them. "
+        "Use for 'what depends on <system>' / 'impact if <system> fails'.",
+        {"system_id": {"type": "string", "description": "system id, e.g. SYS-ledger-db"}},
+        ["system_id"],
+    ),
+    _spec(
+        "decision_trail",
+        "Track 03: why a decision was made — who decided it, what it affects, the doc/ticket/chat "
+        "it was sourced from, and which earlier decision it supersedes / was superseded by. "
+        "Use for 'why did we decide X' / 'what is the story behind <decision>'.",
+        {"decision_id": {"type": "string", "description": "decision id, e.g. ADR-002"}},
+        ["decision_id"],
+    ),
+    _spec(
+        "knowledge_sources",
+        "Track 03: everything written about a system — docs, tickets and chats in one graph, each "
+        "with a named author. Use to cite where an answer comes from.",
+        {"system_id": {"type": "string", "description": "system id, e.g. SYS-ledger-db"}},
+        ["system_id"],
+    ),
+    _spec(
+        "stale_knowledge",
+        "Track 03: what knowledge is going stale — docs not updated in N days, superseded decisions, "
+        "and bus-factor risk (systems with <=1 declared expert that projects depend on). "
+        "Use for 'what is out of date / risky to lose'.",
+        {"stale_days": {"type": "integer", "description": "age threshold in days, default 180"}},
+        [],
+    ),
+]
+
+# The full toolbelt: the 20 fraud tools plus the 6 company-brain tools.
+ALL_TOOL_SPECS: list[dict] = TOOL_SPECS + COMPANY_TOOL_SPECS
 
 
 def execute(name: str, arguments: dict[str, Any]) -> dict:

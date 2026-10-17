@@ -22,6 +22,8 @@ The dataset is hand-authored (no RNG), so every number in the tour is reproducib
 
 from __future__ import annotations
 
+import re
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -365,6 +367,25 @@ def seed(reset: bool = True, verbose: bool = True) -> dict:
     return summary
 
 
+_SEED_LOCK = threading.Lock()
+
+
+def ensure_seeded() -> bool:
+    """Seed the demo org graph only if the company tenant is empty.
+
+    The web console calls this so a judge can switch to Company mode and ask a
+    question without first running the CLI. Returns True if it seeded.
+    """
+    with _SEED_LOCK:
+        with db.tenant_scope(DEFAULT_TENANT):
+            found = db.query("MATCH (s:System) RETURN count(s) AS row")
+        if found and found[0]:
+            return False
+        with db.tenant_scope(DEFAULT_TENANT):
+            seed(reset=True, verbose=False)
+        return True
+
+
 # --- the five Track 03 questions --------------------------------------------
 
 def who_knows(system_id: str) -> dict:
@@ -693,3 +714,197 @@ def run_demo(
     if verbose:
         print(report)
     return report
+
+
+# --- Track 03 as an agent ---------------------------------------------------- #
+# The same loop the fraud investigator uses, but with the six company-brain tools
+# and an org-focused prompt, running against the `company` tenant. Live, the model
+# chooses which question to answer with which tool; offline, a scripted brain runs
+# the same six questions so the command works with no API key.
+
+COMPANY_SYSTEM_PROMPT = """You are GraphSleuth's Company Brain. Your context layer is a FalkorDB graph
+that holds one organisation: people, teams, projects, systems, documents, tickets, chat
+messages, and the architectural decisions the company has made. You answer questions about
+WHO KNOWS WHAT, ownership, risk, and why things are the way they are — by traversing the
+graph, never by guessing. (Each tenant has its own graph; everything you see is this tenant's.)
+
+Available tools (Track 03):
+- `who_knows(system_id)` — who has worked on projects that use a system, ranked, plus declared experts.
+- `owners_of(entity_id)` — who owns a system/project, and the teammates reachable from that owner.
+- `blast_radius(system_id)` — what breaks if a system goes down (reverse transitive :DEPENDS_ON).
+- `decision_trail(decision_id)` — why a decision was made: who, what it affects, its doc/ticket/chat
+  source, and which earlier decision it supersedes / was superseded by.
+- `knowledge_sources(system_id)` — every doc, ticket and chat about a system, each with its author.
+- `stale_knowledge(stale_days)` — ageing docs, superseded decisions, and bus-factor risk.
+- `recall` / `remember` — your long-term memory of past questions in this tenant.
+
+Working rules:
+1. Evidence only. Every claim must come from a tool result, and you must cite the node ids
+   (e.g. `EMP-003`, `DOC-002`, `TKT-102`, `CHAT-202`). If the graph does not show it, say so.
+2. Pick the right tool for the question. "Who knows X" -> `who_knows`. "Who owns X" -> `owners_of`.
+   "What breaks / what depends on X" -> `blast_radius`. "Why did we decide X" -> `decision_trail`.
+   "What do we know about X / where is it documented" -> `knowledge_sources`.
+   "What's out of date / risky" -> `stale_knowledge`. Ask more than one when the question needs it.
+3. Start with `recall` in case this tenant already answered a related question.
+4. Finish by calling `remember` with the conclusion and the ids it is about, so the next session
+   starts smarter.
+
+Final answer format (always, in this order):
+- **Answer** — direct, one or two sentences.
+- **Evidence** — the graph facts you used, each with its node id(s).
+- **Sources** — the docs/tickets/chats/decisions you cite (`ID` — short note).
+- **Confidence** — high/medium/low, and what is missing or stale.
+"""
+
+_SYS_RE = re.compile(r"SYS-[A-Za-z0-9-]+")
+_ADR_RE = re.compile(r"ADR-[A-Za-z0-9-]+")
+
+
+def _focus(question: str) -> tuple[str, str]:
+    """Pick the system / decision a free-text question is about (sensible defaults)."""
+    system = _SYS_RE.search(question)
+    decision = _ADR_RE.search(question)
+    return (
+        system.group(0) if system else "SYS-ledger-db",
+        decision.group(0) if decision else "ADR-002",
+    )
+
+
+def build_company_brain(question: str) -> Any:
+    """Offline fallback: the six Track 03 questions, hand-scripted, answered from the graph."""
+    from .llm import ScriptedBrain
+
+    system, decision = _focus(question)
+    plan: list[tuple[str, Any]] = [
+        ("recall", {"query": system}),
+        ("who_knows", {"system_id": system}),
+        ("owners_of", {"entity_id": system}),
+        ("blast_radius", {"system_id": system}),
+        ("decision_trail", {"decision_id": decision}),
+        ("knowledge_sources", {"system_id": system}),
+        ("stale_knowledge", {}),
+        (
+            "remember",
+            {
+                "kind": "semantic",
+                "text": f"Answered: who knows / owns / depends on {system}, and why {decision} was made.",
+                "about_ids": [system, decision],
+            },
+        ),
+    ]
+    return ScriptedBrain(plan=plan, on_finish=compose_company_final)
+
+
+def compose_company_final(question: str, history: list[dict]) -> str:
+    """Turn the company tool trail into the required Answer/Evidence/Sources format."""
+
+    def last(tool: str) -> dict:
+        for entry in reversed(history):
+            if entry["tool"] == tool and isinstance(entry["result"], dict):
+                return entry["result"]
+        return {}
+
+    knows = last("who_knows")
+    owns = last("owners_of")
+    blast = last("blast_radius")
+    trail = last("decision_trail")
+    sources = last("knowledge_sources")
+    stale = last("stale_knowledge")
+
+    system = knows.get("system") or owns.get("entity") or blast.get("system") or "the system"
+    decision = trail.get("decision", "")
+
+    people = knows.get("people", [])
+    top = people[0] if people else None
+    answer_bits = []
+    if top:
+        answer_bits.append(
+            f"**{top['name']}** (`{top['person']}`) knows `{system}` best "
+            f"({top['projects']} project(s))"
+        )
+    if owns.get("owners"):
+        owner = owns["owners"][0]
+        answer_bits.append(f"it is owned by **{owner['name']}** (`{owner['id']}`)")
+    if blast.get("affected_systems"):
+        names = ", ".join(s["name"] for s in blast["affected_systems"])
+        answer_bits.append(f"if it goes down it takes out {names}")
+    answer = ("; ".join(answer_bits) + ".") if answer_bits else f"No company-brain evidence for {system}."
+
+    evidence: list[str] = []
+    for p in people[:6]:
+        flag = " *(declared expert)*" if p.get("declared_expert") else ""
+        evidence.append(f"  - `who_knows`: {p['name']} (`{p['person']}`) — {p['projects']} project(s){flag}")
+    for s in blast.get("affected_systems", []):
+        evidence.append(f"  - `blast_radius`: {s['name']} (`{s['id']}`, {s['criticality']})")
+    for d in trail.get("decided_by", []):
+        evidence.append(f"  - `decision_trail`: decided by {d['name']} (`{d['person']}`)")
+    for s in trail.get("supersedes", []):
+        evidence.append(f"  - `decision_trail`: `{decision}` supersedes `{s['decision']}` ({s['title']})")
+    for b in stale.get("bus_factor_risks", [])[:4]:
+        evidence.append(f"  - `stale_knowledge`: {b['name']} (`{b['system']}`) has {b['experts']} expert(s)")
+
+    cites: list[str] = []
+    seen_cites: set[str] = set()
+
+    def add_cite(cite_id: str, line: str) -> None:
+        if cite_id in seen_cites:
+            return
+        seen_cites.add(cite_id)
+        cites.append(line)
+
+    for s in trail.get("sources", []):
+        add_cite(s["id"], f"  - [{s['kind']}] `{s['id']}` — {s['summary'][:80]}")
+    for d in sources.get("docs", []):
+        add_cite(d["id"], f"  - [Doc] `{d['id']}` {d['title']} — by {d['author']}")
+    for t in sources.get("tickets", []):
+        add_cite(t["id"], f"  - [Ticket] `{t['id']}` {t['title']} [{t['status']}]")
+    for c in sources.get("chats", []):
+        add_cite(c["id"], f"  - [Chat] `{c['id']}` \"{c['text'][:70]}\" — {c['author']}")
+
+    tools = [e["tool"] for e in history]
+    return "\n".join(
+        [
+            "**Answer**",
+            "",
+            answer,
+            "",
+            f"**Evidence** (tools: {', '.join(dict.fromkeys(tools))})",
+            "",
+            "\n".join(evidence) or "  _(none)_",
+            "",
+            "**Sources**",
+            "",
+            "\n".join(cites) or "  _(none)_",
+            "",
+            "**Confidence** — high: every claim above is a graph traversal with named node ids. "
+            "Re-check against `stale_knowledge` before acting, since some docs and experts may be out of date.",
+        ]
+    )
+
+
+def chat(
+    question: str,
+    *,
+    tenant: str = DEFAULT_TENANT,
+    verbose: bool = True,
+    model: str | None = None,
+    on_event: Any = None,
+    offline: bool = False,
+) -> dict:
+    """Answer one company question with the agent (live model, or scripted offline)."""
+    from .agent import GraphSleuth
+    from .tools import COMPANY_TOOL_SPECS
+
+    scripted = build_company_brain(question)
+    agent = GraphSleuth(
+        tenant=tenant,
+        prompt=COMPANY_SYSTEM_PROMPT,
+        tool_specs=COMPANY_TOOL_SPECS,
+        scripted=scripted,
+        brain=scripted if offline else None,
+        model=model,
+        verbose=verbose,
+        on_event=on_event,
+        role="company-brain",
+    )
+    return agent.ask(question)

@@ -199,6 +199,37 @@ def cmd_company(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_company_chat(args: argparse.Namespace) -> int:
+    from . import company
+
+    db.set_tenant(args.tenant)
+    tenant = db.resolve_tenant()
+    if not args.keep:
+        company.seed(reset=True, verbose=False)
+    question = args.question or "Who knows SYS-ledger-db, and why did we choose ADR-002?"
+    print(f"Company brain (agent) — tenant '{tenant}' (graph '{db.graph_name_for(tenant)}')")
+    print(f"Q: {question}\n")
+    result = company.chat(
+        question,
+        tenant=tenant,
+        verbose=not args.quiet,
+        model=args.model or None,
+        offline=args.offline,
+    )
+    answer = result.get("answer", "")
+    if args.quiet:
+        print(answer)
+    else:
+        print("\n" + "=" * 78 + "\n")
+        print(answer)
+    if args.save:
+        path = Path(args.save)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(answer, encoding="utf-8")
+        print(f"\nSaved company-brain answer to {path}")
+    return 0
+
+
 def cmd_chat(args: argparse.Namespace) -> int:
     agent = GraphSleuth(tenant=args.tenant, session_id=args.session, model=args.model)
     print(f"GraphSleuth ready. session={agent.session_id} tenant={agent.tenant}")
@@ -298,6 +329,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_company.add_argument("--save", default="", help="write the markdown tour to this path")
     p_company.add_argument("--quiet", action="store_true", help="only write the report, do not print it")
     p_company.set_defaults(func=cmd_company)
+
+    p_company_chat = sub.add_parser(
+        "company-chat",
+        help="Company Brain (Track 03) as an agent: ask an org question, it picks the tools",
+    )
+    p_company_chat.add_argument(
+        "question",
+        nargs="?",
+        default="",
+        help="question, e.g. 'who knows SYS-ledger-db' or 'why did we decide ADR-002'",
+    )
+    p_company_chat.add_argument("--tenant", default=_company.DEFAULT_TENANT, help="company brain tenant graph")
+    p_company_chat.add_argument("--keep", action="store_true", help="use the existing graph instead of re-seeding")
+    p_company_chat.add_argument("--offline", action="store_true", help="force the offline scripted brain")
+    p_company_chat.add_argument("--model", default="", help="pin a specific live model")
+    p_company_chat.add_argument("--save", default="", help="write the answer to this path")
+    p_company_chat.add_argument("--quiet", action="store_true", help="print only the final answer")
+    p_company_chat.set_defaults(func=cmd_company_chat)
 
     return parser
 

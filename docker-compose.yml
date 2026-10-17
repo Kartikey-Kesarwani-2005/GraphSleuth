@@ -8,3 +8,22 @@ services:
       # graph data lives inside the project folder: ./data/falkordb
       - ./data/falkordb:/data
     restart: unless-stopped
+
+  # Optional: run the agent + web console in Docker too.
+  #   docker compose --profile app up -d   -> then open http://127.0.0.1:8765
+  # Plain `docker compose up -d` starts only FalkorDB (the documented quickstart).
+  app:
+    build: .
+    container_name: graphsleuth-app
+    profiles: ["app"]
+    depends_on:
+      - falkordb
+    environment:
+      FALKORDB_HOST: falkordb
+      FALKORDB_PORT: "6379"
+      FALKORDB_GRAPH: graphsleuth
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      LLM_MODE: ${LLM_MODE:-auto}
+    ports:
+      - "8765:8765"
+    restart: unless-stopped

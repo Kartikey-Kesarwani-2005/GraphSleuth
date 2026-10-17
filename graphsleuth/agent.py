@@ -83,6 +83,7 @@ class GraphSleuth:
         scripted: Any = None,
         model: str | None = None,
         on_event: Any = None,
+        tool_specs: list[dict] | None = None,
     ) -> None:
         self.tenant = tenant
         self.session_id = session_id or memory.new_session_id()
@@ -95,6 +96,9 @@ class GraphSleuth:
         self._scripted = scripted
         self._model = model
         self._on_event = on_event
+        # The fraud agent gets the 20 fraud tools; a company agent passes its own
+        # subset (see company.COMPANY_TOOL_SPECS). Same loop either way.
+        self.tool_specs = tool_specs if tool_specs is not None else TOOL_SPECS
 
     # -- internals ---------------------------------------------------------- #
     def _brain(self):
@@ -217,7 +221,7 @@ class GraphSleuth:
             # run out of budget mid-investigation.
             force_answer = rounds >= self.max_rounds
             response = brain.chat(
-                messages, TOOL_SPECS, history=self.history, force_answer=force_answer
+                messages, self.tool_specs, history=self.history, force_answer=force_answer
             )
             messages.append(self._assistant_message(response))
 

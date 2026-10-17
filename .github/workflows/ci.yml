@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Fast, database-free checks: import the whole package, compile it, and run the
+  # offline test suite (agent loop, tool registry, MCP parity, company dataset).
+  offline:
+    name: Offline tests (no database)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Compile the package
+        run: python -m compileall -q graphsleuth tests
+      - name: Run offline tests
+        run: python tests/test_offline.py
+
+  # End-to-end against a real FalkorDB: seed the graph and run the reproducible
+  # scorecard. This is the same `eval` a judge runs locally.
+  e2e:
+    name: End-to-end (FalkorDB)
+    runs-on: ubuntu-latest
+    services:
+      falkordb:
+        image: falkordb/falkordb:latest
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      FALKORDB_HOST: localhost
+      FALKORDB_PORT: "6379"
+      FALKORDB_GRAPH: graphsleuth
+      LLM_MODE: demo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Wait for FalkorDB
+        run: |
+          python - <<'PY'
+          import socket, time
+          for _ in range(30):
+              try:
+                  with socket.create_connection(("localhost", 6379), timeout=2):
+                      print("FalkorDB is up"); break
+              except OSError:
+                  time.sleep(1)
+          else:
+              raise SystemExit("FalkorDB did not come up")
+          PY
+      - name: Seed the fraud graph
+        run: python -m graphsleuth seed
+      - name: Reproducible scorecard (expect 11/11)
+        run: python -m graphsleuth eval
+      - name: Company brain (Track 03) tour + agent
+        run: |
+          python -m graphsleuth company --quiet --save demos/out/company.md
+          python -m graphsleuth company-chat --offline --quiet --keep

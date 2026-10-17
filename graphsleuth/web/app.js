@@ -17,6 +17,8 @@ let highlight = null;
 const LABEL_COLOR = {
   Account: "#4cc9f0", Device: "#b085ff", Transaction: "#37d67a", Person: "#7aa2ff",
   Merchant: "#ffa94d", Alert: "#ff6b6b", Case: "#ffd43b", MemoryNote: "#8a93a8",
+  System: "#ffa94d", Project: "#c0e36b", Team: "#e0aaff", Doc: "#63d2c4",
+  Ticket: "#f7b267", Chat: "#9be7ff", Decision: "#ffd166",
 };
 
 function color(node) {
@@ -71,6 +73,37 @@ function ingest(tool, r) {
     for (let i = 0; i < p.length - 1; i++) addEdge(String(p[i].node), String(p[i + 1].node), String(p[i + 1].via));
   } else if (tool === "detect_suspicious_cluster") {
     (r.clusters || []).forEach((c) => (c.members || []).forEach((m) => { addNode(m.account, "Account"); ring.add(m.account); }));
+  } else if (tool === "who_knows") {
+    addNode(r.system, "System");
+    (r.people || []).forEach((p) => { addNode(p.person, "Person"); addEdge(p.person, r.system, "WORKED_ON"); });
+    (r.declared_experts || []).forEach((e) => { addNode(e.person, "Person"); addEdge(e.person, r.system, "KNOWS"); });
+  } else if (tool === "owners_of") {
+    addNode(r.entity);
+    let firstOwner = "";
+    (r.owners || []).forEach((o) => { addNode(o.id, o.kind || "Team"); addEdge(o.id, r.entity, "OWNS"); firstOwner = firstOwner || o.id; });
+    (r.reachable_people || []).forEach((p) => { addNode(p.person, "Person"); if (firstOwner) addEdge(p.person, firstOwner, "MEMBER_OF"); });
+  } else if (tool === "blast_radius") {
+    addNode(r.system, "System");
+    (r.affected_systems || []).forEach((s) => { addNode(s.id, "System"); addEdge(s.id, r.system, "DEPENDS_ON"); });
+    (r.projects_at_risk || []).forEach((p) => { addNode(p.project, "Project"); addEdge(p.project, r.system, "AT_RISK"); });
+    (r.teams_at_risk || []).forEach((t) => { addNode(t.team, "Team"); addEdge(t.team, r.system, "OWNS"); });
+  } else if (tool === "decision_trail") {
+    if (r.found) {
+      addNode(r.decision, "Decision");
+      (r.decided_by || []).forEach((d) => { addNode(d.person, "Person"); addEdge(d.person, r.decision, "DECIDED_BY"); });
+      (r.affects || []).forEach((a) => { addNode(a.system, "System"); addEdge(r.decision, a.system, "AFFECTS"); });
+      (r.sources || []).forEach((s) => { addNode(s.id, s.kind || "Doc"); addEdge(r.decision, s.id, "SOURCED_FROM"); });
+      (r.supersedes || []).forEach((o) => { addNode(o.decision, "Decision"); addEdge(r.decision, o.decision, "SUPERSEDES"); });
+    }
+  } else if (tool === "knowledge_sources") {
+    addNode(r.system, "System");
+    (r.docs || []).forEach((d) => { addNode(d.id, "Doc"); addEdge(d.id, r.system, "ABOUT"); });
+    (r.tickets || []).forEach((t) => { addNode(t.id, "Ticket"); addEdge(t.id, r.system, "ABOUT"); });
+    (r.chats || []).forEach((c) => { addNode(c.id, "Chat"); addEdge(c.id, r.system, "MENTIONS"); });
+  } else if (tool === "stale_knowledge") {
+    (r.stale_docs || []).forEach((d) => addNode(d.id, "Doc"));
+    (r.superseded_decisions || []).forEach((p) => { addNode(p.replaced_by, "Decision"); addNode(p.old, "Decision"); addEdge(p.replaced_by, p.old, "SUPERSEDES"); });
+    (r.bus_factor_risks || []).forEach((b) => addNode(b.system, "System"));
   }
 }
 
@@ -266,7 +299,7 @@ function step(tool, argsText, resText, cls) {
   $("steps").scrollTop = 99999;
 }
 
-async function investigate(target, tenant, offline) {
+async function investigate(target, tenant, offline, mode) {
   $("steps").innerHTML = "";
   $("verdict").classList.add("hidden");
   $("empty").classList.add("hidden");
@@ -277,7 +310,7 @@ async function investigate(target, tenant, offline) {
   const res = await fetch("/api/investigate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target, tenant, offline }),
+    body: JSON.stringify({ target, tenant, offline, mode }),
   });
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -315,7 +348,7 @@ function handle(ev) {
     step("memory", "learned playbook " + (ev.playbook.note_id || ""), (ev.playbook.steps || []).join(" > "), "call");
   } else if (ev.type === "done") {
     renderVerdict(ev);
-    focal = ev.graph.focal || "";
+    focal = ev.graph.focal || focal;
     (ev.graph.ring || []).forEach((r) => ring.add(r));
     (ev.graph.nodes || []).forEach((n) => { const x = addNode(n.id, n.label); if (x) x.kind = n.kind; });
     (ev.graph.edges || []).forEach((e) => addEdge(e.from, e.to, e.type));
@@ -371,11 +404,21 @@ function shortArgs(a) {
 /* ------------------------------------------------------------------ *
  * boot
  * ------------------------------------------------------------------ */
+function applyMode() {
+  const company = $("mode").value === "company";
+  $("target").value = company ? "SYS-ledger-db" : "ACC-9003";
+  $("target").placeholder = company ? "SYS-ledger-db" : "ACC-9003";
+  $("tenant").value = company ? "company" : "default";
+  document.querySelector("#controls button").textContent = company ? "Ask the company brain" : "Investigate";
+}
+$("mode").addEventListener("change", applyMode);
+
 $("controls").addEventListener("submit", (e) => {
   e.preventDefault();
-  const target = $("target").value.trim() || "ACC-9003";
+  const mode = $("mode").value;
+  const target = $("target").value.trim() || (mode === "company" ? "SYS-ledger-db" : "ACC-9003");
   const tenant = $("tenant").value.trim();
-  investigate(target, tenant, $("offline").checked).catch((err) => step("stream", "", String(err), "error"));
+  investigate(target, tenant, $("offline").checked, mode).catch((err) => step("stream", "", String(err), "error"));
 });
 
 resize();

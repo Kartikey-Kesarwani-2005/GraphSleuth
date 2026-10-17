@@ -16,14 +16,16 @@ from graphsleuth.agent import compose_final  # noqa: E402
 
 
 def test_tool_specs_are_openai_shaped() -> None:
-    assert len(tools.TOOL_SPECS) == 20
-    for spec in tools.TOOL_SPECS:
+    assert len(tools.TOOL_SPECS) == 20  # the fraud-investigation toolbelt
+    assert len(tools.COMPANY_TOOL_SPECS) == 6  # Track 03 company-brain tools
+    assert len(tools.ALL_TOOL_SPECS) == 26  # everything the agents/MCP can call
+    for spec in tools.ALL_TOOL_SPECS:
         function = spec["function"]
         assert spec["type"] == "function"
         assert function["name"] in tools.HANDLERS
         assert function["parameters"]["type"] == "object"
         # every declared tool must have a handler and vice versa
-    assert set(tools.HANDLERS) == {s["function"]["name"] for s in tools.TOOL_SPECS}
+    assert set(tools.HANDLERS) == {s["function"]["name"] for s in tools.ALL_TOOL_SPECS}
 
 
 def test_graph_algorithm_and_handoff_tools_registered() -> None:
@@ -411,9 +413,9 @@ def test_mcp_exposes_every_tool_with_matching_parameters() -> None:
 
     specs = {
         spec["function"]["name"]: set(spec["function"]["parameters"]["properties"])
-        for spec in tools.TOOL_SPECS
+        for spec in tools.ALL_TOOL_SPECS
     }
-    assert len(specs) == 20
+    assert len(specs) == 26
     for name, spec_params in specs.items():
         exported = getattr(mcp_server, name, None)
         assert callable(exported), f"{name} is not exposed over MCP"
@@ -477,6 +479,117 @@ def test_company_build_is_deterministic() -> None:
     # the brief's front-page query shape is preserved verbatim
     assert "(p:Person)-[:WORKED_ON]->(pr:Project)-[:USES]->(s:System" in company.WHO_KNOWS_QUERY
     assert "count(pr)" in company.WHO_KNOWS_QUERY  # not count(*): see the quirk note
+
+
+def test_company_tools_are_registered_and_mcp_exposed() -> None:
+    """Track 03 must be agent-callable, not only a scripted tour: the six company
+    questions are real tools in the shared registry, and an MCP client can call them."""
+    names = {"who_knows", "owners_of", "blast_radius", "decision_trail", "knowledge_sources", "stale_knowledge"}
+    assert names <= set(tools.HANDLERS)
+    assert names == {s["function"]["name"] for s in tools.COMPANY_TOOL_SPECS}
+    assert names.isdisjoint({s["function"]["name"] for s in tools.TOOL_SPECS})
+    # the company tools are read-only, so they must never be counted as actions
+    assert names.isdisjoint(tools.MUTATING_TOOLS)
+
+    import importlib
+
+    try:
+        mcp_server = importlib.import_module("graphsleuth.mcp_server")
+    except (ImportError, SystemExit) as exc:
+        print(f"(skipping company MCP check: {exc})")
+        return
+    for name in names:
+        assert callable(getattr(mcp_server, name, None)), f"{name} not exposed over MCP"
+
+
+def test_company_agent_offline_brain_answers_with_citations() -> None:
+    """The offline company brain must pick the right system/decision from free text
+    and compose an Answer/Evidence/Sources report from the tool trail."""
+    from graphsleuth import company
+
+    system, decision = company._focus("who knows SYS-payments-api and why ADR-005")
+    assert system == "SYS-payments-api"
+    assert decision == "ADR-005"
+    # defaults when the question names nothing
+    assert company._focus("what is going stale?") == ("SYS-ledger-db", "ADR-002")
+
+    brain = company.build_company_brain("who knows SYS-ledger-db")
+    tools_called = [name for name, _ in brain._queue]
+    assert tools_called[:2] == ["recall", "who_knows"]
+    assert {"owners_of", "blast_radius", "decision_trail", "knowledge_sources", "stale_knowledge"} <= set(
+        tools_called
+    )
+
+    # a synthetic trail composes the required sections with node ids
+    history = [
+        {"tool": "who_knows", "arguments": {}, "result": {
+            "system": "SYS-ledger-db",
+            "people": [{"person": "EMP-001", "name": "Aarav Sharma", "projects": 2, "declared_expert": True}],
+            "declared_experts": [{"person": "EMP-001", "name": "Aarav Sharma"}],
+        }},
+        {"tool": "decision_trail", "arguments": {}, "result": {
+            "found": True, "decision": "ADR-002", "title": "Migrate the ledger to schema v9",
+            "status": "accepted", "decided_by": [{"person": "EMP-001", "name": "Aarav Sharma"}],
+            "affects": [], "sources": [{"id": "DOC-002", "kind": "Doc", "summary": "Ledger schema reference"}],
+            "supersedes": [], "superseded_by": [],
+        }},
+    ]
+    report = company.compose_company_final("who knows SYS-ledger-db", history)
+    for section in ("**Answer**", "**Evidence**", "**Sources**", "**Confidence**"):
+        assert section in report
+    assert "EMP-001" in report
+    assert "DOC-002" in report
+
+
+def test_company_result_produces_graph_facts() -> None:
+    """The console grows the org graph from company tool results, so the explainability
+    layer must turn them into nodes/edges (Track 03 in the UI, not only in the CLI)."""
+    from graphsleuth import explain
+
+    trace = [
+        {"tool": "who_knows", "arguments": {}, "result": {
+            "system": "SYS-ledger-db",
+            "people": [{"person": "EMP-001", "name": "Aarav Sharma", "projects": 2, "declared_expert": True}],
+            "declared_experts": [{"person": "EMP-001", "name": "Aarav Sharma"}],
+        }},
+        {"tool": "blast_radius", "arguments": {}, "result": {
+            "system": "SYS-ledger-db",
+            "affected_systems": [{"id": "SYS-payments-api", "name": "Payments API", "criticality": "critical"}],
+            "projects_at_risk": [], "teams_at_risk": [],
+        }},
+        {"tool": "decision_trail", "arguments": {}, "result": {
+            "found": True, "decision": "ADR-002", "title": "x", "status": "accepted",
+            "decided_by": [{"person": "EMP-001", "name": "Aarav Sharma"}],
+            "affects": [{"system": "SYS-ledger-db", "name": "Ledger DB"}],
+            "sources": [{"id": "DOC-002", "kind": "Doc", "summary": "Ledger schema"}],
+            "supersedes": [], "superseded_by": [],
+        }},
+        {"tool": "knowledge_sources", "arguments": {}, "result": {
+            "system": "SYS-ledger-db",
+            "docs": [{"id": "DOC-002", "title": "Ledger", "updated_at": "", "author": "Aarav"}],
+            "tickets": [], "chats": [],
+        }},
+    ]
+    nodes, edges = explain.collect_graph_facts(trace)
+    assert {"EMP-001", "SYS-ledger-db", "SYS-payments-api", "ADR-002", "DOC-002"} <= set(nodes)
+    assert ("EMP-001", "SYS-ledger-db", "WORKED_ON") in edges
+    assert ("SYS-payments-api", "SYS-ledger-db", "DEPENDS_ON") in edges
+    assert ("ADR-002", "DOC-002", "SOURCED_FROM") in edges
+
+
+def test_web_console_offers_company_mode() -> None:
+    """The console must expose the org brain (Track 03) as a first-class mode, and the
+    server must route `mode: company` to the company agent."""
+    from graphsleuth import server
+
+    html = (server.WEB_DIR / "index.html").read_text(encoding="utf-8")
+    js = (server.WEB_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'value="company"' in html  # the mode selector exists
+    assert "mode" in js and "who_knows" in js  # org tool results grow the canvas
+    import inspect
+
+    src = inspect.getsource(server.Handler._sse_stream)
+    assert 'mode == "company"' in src  # the server actually branches on it
 
 
 if __name__ == "__main__":

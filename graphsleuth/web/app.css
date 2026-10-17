@@ -169,6 +169,22 @@ canvas:active { cursor: grabbing; }
 .dot.Device { background: #b085ff; }
 .dot.Transaction { background: var(--ok); }
 .dot.Alert { background: var(--err); }
+.dot.System { background: #ffa94d; }
+.dot.Person { background: #7aa2ff; }
+.dot.Doc { background: #63d2c4; }
+
+#controls select {
+  grid-column: 1 / -1;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 9px;
+  padding: 9px 12px;
+  font: inherit;
+  outline: none;
+  cursor: pointer;
+}
+#controls select:focus { border-color: var(--accent); }
 
 @media (max-width: 900px) {
   main { grid-template-columns: 1fr; height: auto; }
