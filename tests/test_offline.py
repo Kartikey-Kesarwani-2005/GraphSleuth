@@ -232,13 +232,19 @@ def test_llm_model_chain_primary_first() -> None:
 
     from graphsleuth.config import config
 
-    saved_model, saved_env = config.groq_model, os.environ.get("LLM_MODELS")
+    saved_model = config.groq_model
+    saved_key = config.groq_api_key
+    saved_env = os.environ.get("LLM_MODELS")
+    # Force the groq path so the configured primary is deterministic: without a
+    # key (e.g. CI, no .env) `llm_model` would fall back to the openai default.
+    config.groq_api_key = "test-key"
     config.groq_model = "primary-model"
     os.environ["LLM_MODELS"] = "primary-model, second ,third,second"  # dupes + spaces
     try:
         assert config.llm_models == ["primary-model", "second", "third"]
     finally:
         config.groq_model = saved_model
+        config.groq_api_key = saved_key
         if saved_env is None:
             os.environ.pop("LLM_MODELS", None)
         else:

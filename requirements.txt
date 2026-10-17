@@ -1,4 +1,6 @@
-falkordb
-requests
-python-dotenv
-mcp
+# Runtime dependencies. Bounds (not exact pins) guard against a future major
+# release silently breaking CI while still allowing patch/minor updates.
+falkordb>=1.8,<2
+requests>=2.31,<3
+python-dotenv>=1.0,<2
+mcp>=1.0,<3
