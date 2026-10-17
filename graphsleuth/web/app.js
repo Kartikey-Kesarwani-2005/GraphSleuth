@@ -411,7 +411,7 @@ function applyMode() {
   $("target").value = company ? "SYS-ledger-db" : "ACC-9003";
   $("target").placeholder = company ? "SYS-ledger-db" : "ACC-9003";
   $("tenant").value = company ? "company" : "default";
-  document.querySelector("#controls button").textContent = company ? "Ask the company brain" : "Investigate";
+  document.querySelector("#controls button").textContent = company ? "Ask the Company Brain" : "Investigate";
   const q = $("question");
   if (q) {
     q.classList.toggle("hidden", !company);
