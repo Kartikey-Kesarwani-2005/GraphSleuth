@@ -29,7 +29,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from . import db, explain, memory
+from . import __version__
+from . import db
+from . import explain
+from . import llm
+from . import memory
+from . import tools
 from .agent import GraphSleuth, build_demo_brain
 from .config import config
 
@@ -54,7 +59,10 @@ def _status() -> dict:
             "live": config.use_live_llm(),
             "provider": config.llm_provider,
             "chain": config.llm_models,
+            "fallback_chain": getattr(llm, "FALLBACK_CHAIN", []),
         },
+        "mcp": {"tools": len(tools.ALL_TOOL_SPECS)},
+        "version": __version__,
     }
 
 
