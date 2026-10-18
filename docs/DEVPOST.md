@@ -74,9 +74,9 @@ samples source nodes with a time-based seed by default; the tool pins `samplingS
 `samplingSize` past the node count for an exact, reproducible ranking. Every algorithm result reports
 the `engine` that produced it.
 
-**Try it:** `powershell -ExecutionPolicy Bypass -File .\setup.ps1` (venv → deps → Docker →
-FalkorDB → seed → demo), then put a free `GROQ_API_KEY` in `.env` and re-run — the real model
-takes over the loop. Repo: https://github.com/Kartikey-Kesarwani-2005/GraphSleuth
+**Try it:** `bash setup.sh` (macOS/Linux) or `powershell -ExecutionPolicy Bypass -File .\setup.ps1`
+(Windows) — venv → deps → Docker → FalkorDB → seed → demo. Then put a free `GROQ_API_KEY` in
+`.env` and re-run: the real model takes over the loop. Repo: https://github.com/Kartikey-Kesarwani-2005/GraphSleuth
 
 ---
 

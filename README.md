@@ -112,9 +112,40 @@ the demo discovers (`ACC-9001…ACC-9005` funnelling into collector `ACC-9100`).
 
 ---
 
-## Quickstart (Windows)
+## Quickstart
 
-Requirements: Python 3.10+, Docker (for FalkorDB).
+Requirements: Python 3.10+, Docker (for FalkorDB). The steps are the same on every OS — pick your
+shell.
+
+### macOS / Linux
+
+```bash
+# 1. FalkorDB
+docker compose up -d
+
+# 2. Python environment
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+
+# 3. Config (optional — a key is only needed for live-LLM mode)
+cp .env.example .env
+
+# 4. Build the fraud graph
+.venv/bin/python -m graphsleuth seed
+
+# 5. Run the investigation
+.venv/bin/python -m graphsleuth demo --target ACC-9003 --save demos/out/report.md
+```
+
+`setup.sh` does everything end to end — creates the venv if missing, installs the dependencies,
+waits for FalkorDB (on macOS it launches Docker Desktop and waits for the engine), seeds the graph
+and runs the demo:
+
+```bash
+bash setup.sh          # one command from a fresh clone
+```
+
+### Windows (PowerShell)
 
 ```powershell
 # 1. FalkorDB
@@ -134,13 +165,17 @@ copy .env.example .env
 .\.venv\Scripts\python.exe -m graphsleuth demo --target ACC-9003 --save demos/out/report.md
 ```
 
+`setup.ps1` does everything end to end on Windows: it creates the venv if missing, installs the
+dependencies, launches Docker Desktop if the engine is down (waiting for it to come up), brings
+FalkorDB up, seeds the graph and runs the demo — one command from a fresh clone.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
 A sample report from a real run is committed at [`demos/EXAMPLE_REPORT.md`](demos/EXAMPLE_REPORT.md)
 — and if the FalkorDB container ever stops, `docker compose up -d` brings it straight back with the
 graph intact (the data is bind-mounted to `./data/falkordb`).
-
-`setup.ps1` does everything end to end: it creates the venv if missing, installs the dependencies,
-launches Docker Desktop if the engine is down (waiting for it to come up), brings FalkorDB up, seeds
-the graph and runs the demo — one command from a fresh clone.
 
 ### Commands
 
@@ -666,7 +701,8 @@ GraphSleuth/
 ├─ docker-compose.yml  # FalkorDB (and an optional `app` service: --profile app)
 ├─ Dockerfile          # the agent + web console image (optional)
 ├─ LICENSE             # MIT
-├─ setup.ps1
+├─ setup.ps1           # one-shot setup (Windows)
+├─ setup.sh            # one-shot setup (macOS / Linux)
 └─ requirements.txt
 ```
 
