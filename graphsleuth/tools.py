@@ -775,13 +775,86 @@ def what_if_removed(entity_id: str, from_id: str = "", to_id: str = "", max_dept
         "cluster": cluster,
         "path": path,
         "impact": impact,
+        **_robustness_metrics(entity_id, top_before, top_after, path, bridge, probe),
         "conclusion": f"Removing {entity_id} ({impact}): " + "; ".join(reasons) + ".",
         "note": "read-only counterfactual — the graph was NOT modified.",
     }
 
 
+def _robustness_metrics(
+    entity_id: str,
+    top_before: dict | None,
+    top_after: dict | None,
+    path: dict | None,
+    bridge: dict,
+    probe: list[str],
+) -> dict:
+    path_survives = True
+    money_survives = True
+    ring_survives = True
+    if path:
+        if path.get("connected_before") and not path.get("connected_after"):
+            path_survives = False
+        if path.get("money_before") and not path.get("money_after"):
+            money_survives = False
+    if top_before and top_after:
+        dropped = top_before["size"] - top_after["size"]
+        if dropped >= 2 or top_after["size"] < 3:
+            ring_survives = False
+    elif top_before and not top_after:
+        ring_survives = False
+    elif not top_before:
+        ring_survives = True
+
+    score = 100
+    if not money_survives or not path_survives:
+        score = 0
+    elif bridge.get("is_bridge"):
+        penalty = min(bridge.get("pairs_separated") or 0, 20)
+        score = max(0, 90 - penalty)
+    if not ring_survives:
+        score = min(score, 40)
+    score = max(0, min(100, int(score)))
+
+    if score >= 95:
+        verdict = "robust"
+    elif score >= 60:
+        verdict = "mostly_robust"
+    elif score >= 30:
+        verdict = "fragile"
+    else:
+        verdict = "unstable"
+
+    load_bearing = (100 - score) / 100.0
+    if load_bearing < 0:
+        load_bearing = 0.0
+    if load_bearing > 1.0:
+        load_bearing = 1.0
+
+    candidates: list[dict] = []
+    for nid in probe[:6]:
+        candidates.append(
+            {
+                "entity_id": nid,
+                "label": str(nid).split("-")[0],
+                "why": "bridge-probe neighbour (alternate/redundancy candidate)",
+            }
+        )
+    candidates = candidates[:3]
+
+    return {
+        "robustness": score,
+        "verdict": verdict,
+        "load_bearing_score": round(load_bearing, 3),
+        "minimal_cut_candidates": candidates,
+    }
+
+
 def _top_members(cluster: dict | None) -> set[str]:
     return {str(m.get("account")) for m in ((cluster or {}).get("members") or [])}
+
+
+
 
 
 def _reachable(start: str, skip: frozenset[str], depth: int = 3, budget: int = 300) -> set[str]:
