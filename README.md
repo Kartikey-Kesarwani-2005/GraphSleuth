@@ -6,6 +6,8 @@
 ![MCP](https://img.shields.io/badge/MCP-30%20tools-8A2BE2)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+> **Demo Video:** [Add Loom/YouTube unlisted link here](https://www.loom.com/share/your-demo-link) *(replace with actual video link)*
+
 **A fraud investigation agent whose context layer is FalkorDB.**
 
 GraphSleuth doesn't look up records — it follows relationships. Ask it about one suspicious
@@ -652,6 +654,12 @@ GraphSleuth/
 Everything the project needs — code, config, tests, and the graph's on-disk data — lives inside
 this one folder. The only machine-wide pieces are Docker Desktop itself and the pulled
 `falkordb/falkordb` image.
+
+---
+
+## AI Assistance Disclosure
+
+This project was developed with assistance from AI coding tools (OpenCode) for scaffolding, cleanup, deduplication, and UI polish. All graph schema design, Cypher queries, agent/tool logic, counterfactuals, tests, and verification were authored, reviewed, and validated by the team (**NexAI / codeNZ4NTP**).
 
 ---
 

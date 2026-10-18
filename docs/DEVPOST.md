@@ -10,6 +10,8 @@ Paste-ready text for https://devpost.com (Team **NexAI**, code **NZ4NTP**).
 FalkorDB graph, so it follows connections, remembers across sessions, and can show the exact path
 behind every answer.**
 
+> **Demo Video:** [Add Loom/YouTube unlisted link here](https://www.loom.com/share/your-demo-link) *(replace with actual video before submitting)*
+
 ---
 
 ## Long description (the main "More information / About" box)
@@ -77,6 +79,12 @@ the `engine` that produced it.
 **Try it:** `powershell -ExecutionPolicy Bypass -File .\setup.ps1` (venv → deps → Docker →
 FalkorDB → seed → demo), then put a free `GROQ_API_KEY` in `.env` and re-run — the real model
 takes over the loop. Repo: https://github.com/Kartikey-Kesarwani-2005/GraphSleuth
+
+---
+
+## AI Assistance Disclosure
+
+This project was developed with assistance from AI coding tools (OpenCode) for scaffolding, cleanup, deduplication, and UI polish. All graph schema design, Cypher queries, agent/tool logic, counterfactuals, tests, and verification were authored, reviewed, and validated by the team (**NexAI / codeNZ4NTP**).
 
 ---
 
