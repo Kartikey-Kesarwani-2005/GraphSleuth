@@ -630,7 +630,7 @@ function buildProofPack() {
 <p class="meta">Target <code>${esc($("target").value || "-")}</code> · Tenant <code>${esc($("tenant").value || "-")}</code>
  · Mode ${$("mode").value === "company" ? "Company Brain" : "Fraud investigation"}
  · ${new Date().toISOString()} · Rounds ${ev.rounds ?? "-"} · Brain ${esc(ev.brain || "-")}</p>
-<p><span class="badge">MCP toolbelt: 30 tools</span><span class="badge">Offline tests: 40/40</span>
+<p><span class="badge">MCP toolbelt: 30 tools</span><span class="badge">Offline tests: 41/41</span>
 <span class="badge">Eval: 16/16</span><span class="badge">Read-only counterfactual</span></p>
 
 <h2>Verdict</h2>
