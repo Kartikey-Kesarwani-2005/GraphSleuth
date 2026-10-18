@@ -165,6 +165,63 @@ def test_guard_reports_start_phrase() -> None:
     assert "read-only tool" not in message
 
 
+def test_unconstrained_path_through_case_machinery_is_refused() -> None:
+    """A chain that only exists by hopping through a case/alert node is investigation
+    machinery, not a link in the payment network. Without `via` it is refused, and the
+    caller gets the crossed nodes plus the relationship types to retry with."""
+    money_chain = {
+        "from": "ACC-A",
+        "to": "ACC-B",
+        "connected": True,
+        "hops": 1,
+        "path": [
+            {"node": "ACC-A", "via": None, "labels": ["Account"]},
+            {"node": "ACC-B", "via": "ORIGINATED", "labels": ["Account"]},
+        ],
+    }
+    ok = tools._guard_unconstrained_path(dict(money_chain), set())
+    assert ok.get("blocked") is not True and ok["path"] == money_chain["path"]
+
+    machinery = {
+        "from": "ACC-A",
+        "to": "ACC-B",
+        "connected": True,
+        "hops": 2,
+        "path": [
+            {"node": "ACC-A", "via": None, "labels": ["Account"]},
+            {"node": "CASE-0001", "via": "INVOLVES", "labels": ["Case"]},
+            {"node": "ACC-B", "via": "INVOLVES", "labels": ["Account"]},
+        ],
+    }
+    blocked = tools._guard_unconstrained_path(dict(machinery), set())
+    assert blocked["blocked"] is True
+    assert "path" not in blocked and "narrative" not in blocked  # no path is handed over
+    assert blocked["crossed"] == [{"node": "CASE-0001", "labels": ["Case"]}]
+    assert "via=['ORIGINATED','DESTINED']" in blocked["hint"]
+
+    # an explicit `via` is the caller's deliberate intent: the same chain comes back
+    allowed = tools._guard_unconstrained_path(dict(machinery), {"INVOLVES"})
+    assert allowed.get("blocked") is not True and allowed["path"] == machinery["path"]
+
+    # the endpoints are the caller's own choice: connecting an account to the case it
+    # is involved in is a legitimate question, so it is not machinery-crossing
+    endpoint_case = {
+        "from": "ACC-A",
+        "to": "CASE-0001",
+        "connected": True,
+        "hops": 1,
+        "path": [
+            {"node": "ACC-A", "via": None, "labels": ["Account"]},
+            {"node": "CASE-0001", "via": "INVOLVES", "labels": ["Case"]},
+        ],
+    }
+    assert tools._guard_unconstrained_path(dict(endpoint_case), set()).get("blocked") is not True
+
+    # an unreachable pair is passed through untouched (no false "blocked" claim)
+    miss = {"from": "ACC-A", "to": "ACC-Z", "connected": False, "note": "no chain"}
+    assert tools._guard_unconstrained_path(dict(miss), set()) == miss
+
+
 def test_explain_collects_path_from_trace() -> None:
     trace = [
         {

@@ -36,6 +36,12 @@ MAX_ROWS = 60
 # traversed as if they were part of the fraud network (see shortest_connection).
 INTERNAL_LABELS = {"Handoff", "MemoryNote", "Session", "Message"}
 
+# Case management nodes. Unlike accounts, devices and merchants they are not part
+# of the payment network: a chain that only exists by hopping through a case or an
+# alert is an artefact of the investigation, not evidence of a link between the two
+# entities being compared (see `_guard_unconstrained_path`).
+CASE_MACHINERY_LABELS = {"Case", "Alert"}
+
 # Session that is currently executing tool calls (stamped onto handoffs).
 _session: ContextVar[str] = ContextVar("graphsleuth_session", default="")
 
@@ -558,7 +564,7 @@ def _bfs_path(
         }
 
     queue = [(id_a, None)]
-    parents: dict[str, tuple[str | None, str | None]] = {id_a: (None, None)}
+    parents: dict[str, tuple[str | None, str | None, list[str]]] = {id_a: (None, None, [])}
     found = False
 
     for _ in range(max_depth):
@@ -577,7 +583,7 @@ def _bfs_path(
                     continue
                 if neighbour_id != id_b and INTERNAL_LABELS & set(summary.get("labels") or []):
                     continue
-                parents[neighbour_id] = (current, rel_type)
+                parents[neighbour_id] = (current, rel_type, list(summary.get("labels") or []))
                 if neighbour_id == id_b:
                     found = True
                     break
@@ -602,8 +608,8 @@ def _bfs_path(
     chain: list[dict] = []
     cursor = id_b
     while cursor is not None:
-        parent, rel_type = parents[cursor]
-        chain.append({"node": cursor, "via": rel_type})
+        parent, rel_type, labels = parents[cursor]
+        chain.append({"node": cursor, "via": rel_type, "labels": labels})
         cursor = parent
     chain.reverse()
 
@@ -624,6 +630,58 @@ def _bfs_path(
     }
 
 
+def _machinery_steps(chain: list[dict]) -> list[dict]:
+    """Interior path steps that are case/alert machinery rather than payment-network
+    nodes.
+
+    Endpoints are excluded: the caller chose them, so connecting an account to a case
+    it is involved in is a legitimate request. A case or alert *between* two entities,
+    though, only exists because of the investigation the path is meant to support.
+    """
+    return [
+        step
+        for step in chain[1:-1]
+        if isinstance(step, dict) and CASE_MACHINERY_LABELS & set(step.get("labels") or [])
+    ]
+
+
+def _guard_unconstrained_path(result: dict, allowed: set[str]) -> dict:
+    """Refuse a path whose only route runs through case/alert machinery.
+
+    With no explicit `via`, a breadth-first walk will happily hop ACC -> CASE -> ACC and
+    hand the model a "money path" that is really just two alerts filed on the same
+    account. That chain is blocked instead of narrated; the crossed nodes and the
+    relationship types to retry with are returned so the agent can ask for the path it
+    actually wants (money-only, or the case linkage on purpose).
+    """
+    if allowed or not result.get("connected"):
+        return result
+    crossed = _machinery_steps(result.get("path") or [])
+    if not crossed:
+        return result
+    return {
+        "from": result.get("from"),
+        "to": result.get("to"),
+        "connected": True,
+        "hops": result.get("hops"),
+        "via": [],
+        "blocked": True,
+        "error": (
+            "path between these two entities only exists by stepping through case/alert "
+            "nodes: " + ", ".join(sorted({str(step.get("node")) for step in crossed}))
+            + " — that is investigation machinery, not a link in the payment network"
+        ),
+        "crossed": [
+            {"node": step.get("node"), "labels": step.get("labels")} for step in crossed
+        ],
+        "hint": (
+            "re-run with via=['ORIGINATED','DESTINED'] for the money-only chain, or pass "
+            "the relationship types you mean (e.g. via=['INVOLVES']) to walk these links "
+            "deliberately"
+        ),
+    }
+
+
 def shortest_connection(id_a: str, id_b: str, max_depth: int = 6, via: Any = None) -> dict:
     """Breadth-first search for the shortest chain of relationships between two entities.
 
@@ -634,6 +692,11 @@ def shortest_connection(id_a: str, id_b: str, max_depth: int = 6, via: Any = Non
     Agent-internal nodes (`Handoff`, `MemoryNote`, `Session`, `Message`) are
     never used as stepping stones: the agent's own bookkeeping must not become
     a shortcut through the fraud network it is investigating.
+
+    Without `via`, a path that only exists by routing through case/alert nodes is
+    refused rather than narrated (`blocked: True`, plus the crossed nodes and a
+    retry hint) — such a chain is an artefact of the case files, not evidence that
+    the two entities are linked.
     """
     if isinstance(via, str):
         allowed = {part.strip().upper() for part in via.split(",") if part.strip()}
@@ -641,7 +704,7 @@ def shortest_connection(id_a: str, id_b: str, max_depth: int = 6, via: Any = Non
         allowed = {str(part).strip().upper() for part in via if str(part).strip()}
     else:
         allowed = set()
-    return _bfs_path(id_a, id_b, max_depth, allowed)
+    return _guard_unconstrained_path(_bfs_path(id_a, id_b, max_depth, allowed), allowed)
 
 
 def what_if_removed(entity_id: str, from_id: str = "", to_id: str = "", max_depth: int = 6) -> dict:
@@ -2230,7 +2293,9 @@ TOOL_SPECS: list[dict] = [
         "shortest_connection",
         "Breadth-first search for the shortest chain of relationships between two entities. "
         "Use it to prove how two suspects are linked and to narrate the path. "
-        "Pass `via` to follow only certain relationship types (e.g. a money-only chain).",
+        "Pass `via` to follow only certain relationship types (e.g. a money-only chain). "
+        "Without `via`, a chain that only exists via case/alert nodes is refused as "
+        "investigation machinery, not a link.",
         {
             "id_a": {"type": "string"},
             "id_b": {"type": "string"},

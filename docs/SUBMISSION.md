@@ -56,7 +56,7 @@ python -m graphsleuth.mcp_server  # stdio, 30 tools
 - `demos/LIVE_RUN_3AGENT.md` (triage→investigator→verifier, verdict CONFIRMED)
 
 ## Verification
-- **Offline tests:** `python tests/test_offline.py` → 39/39 PASS (no DB)
+- **Offline tests:** `python tests/test_offline.py` → 40/40 PASS (no DB)
 - **Eval:** `python -m graphsleuth eval` → 16/16 (live FalkorDB)
 - **MCP:** 30 tools (24 fraud + 6 company), schemas match registry
 - **Isolation:** per-tenant multigraph proven

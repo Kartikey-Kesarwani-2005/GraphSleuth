@@ -65,7 +65,7 @@ session's evidence trail, which is what `demo --save`, the console's evidence pa
 
 ### `shortest_connection`
 
-**Read-only.** Breadth-first search for the shortest chain of relationships between two entities. Use it to prove how two suspects are linked and to narrate the path. Pass `via` to follow only certain relationship types (e.g. a money-only chain).
+**Read-only.** Breadth-first search for the shortest chain of relationships between two entities. Use it to prove how two suspects are linked and to narrate the path. Pass `via` to follow only certain relationship types (e.g. a money-only chain). Without `via`, a chain that only exists via case/alert nodes is refused as investigation machinery, not a link.
 
 | argument | type | required | description |
 | --- | --- | --- | --- |

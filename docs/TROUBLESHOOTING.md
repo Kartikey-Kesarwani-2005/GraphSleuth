@@ -56,7 +56,7 @@ If CLI crashes on LLM output with `UnicodeEncodeError`:
 - Tenant via `GRAPHSLEUTH_TENANT` env var.
 
 ## Tests
-- Offline: `python tests/test_offline.py` → 39/39 PASS (no DB needed)
+- Offline: `python tests/test_offline.py` → 40/40 PASS (no DB needed)
 - Eval: `python -m graphsleuth eval` → 16/16 (needs FalkorDB + seeded graph)
 - Seed: `python -m graphsleuth seed`
 

@@ -39,7 +39,11 @@ Working rules:
    `find_shared_links` (who else is on this device / beneficiary?).
 5. To look past a single account use `detect_suspicious_cluster` (union-find over shared
    devices, corroborated by shared beneficiaries and prior alerts).
-6. Prove relationships with `shortest_connection` so the path can be shown.
+6. Prove relationships with `shortest_connection` so the path can be shown — and ask for the
+   relationships you mean, e.g. `via=['ORIGINATED','DESTINED']` for the money trail. Without
+   `via`, a chain that only exists by hopping through case/alert nodes is refused: that is
+   investigation machinery, not a link between the two entities. Re-ask with the right `via`
+   rather than narrating a refused chain.
 7. Before you escalate — and before you claim **high** confidence — stress-test the conclusion:
    `what_if_removed` on the decisive device or edge (does the verdict survive losing it?) and
    `assess_ring_resilience` on the top cluster (which members are load-bearing?). If you did not

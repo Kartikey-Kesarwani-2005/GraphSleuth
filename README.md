@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml/badge.svg)](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-39%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-40%20passing-brightgreen)
 ![MCP](https://img.shields.io/badge/MCP-30%20tools-8A2BE2)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -709,7 +709,7 @@ Selected output (copied from the report):
   own conclusion — proof that state lives in the graph, not the process.
 * **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 30 tools and
   gets live graph data back (`tools: 30`; live `entity_search` + `detect_suspicious_cluster` calls).
-* **Tests:** `tests/test_offline.py` → 39/39 pass (no database required; includes an MCP/agent
+* **Tests:** `tests/test_offline.py` → 40/40 pass (no database required; includes an MCP/agent
   toolbelt parity check and company-brain tests); `compileall` clean. CI runs the suite and a real
   FalkorDB end-to-end job on every push.
 
