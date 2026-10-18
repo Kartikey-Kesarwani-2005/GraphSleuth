@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml/badge.svg)](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-34%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-36%20passing-brightgreen)
 ![MCP](https://img.shields.io/badge/MCP-30%20tools-8A2BE2)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -428,7 +428,10 @@ numbers (a verdict that survives the counterfactual at robustness 100/100 says s
 single-point-of-failure verdict can never claim "high"), which makes the agent's self-report
 honest by construction. That holds for a live model too: if an answer claims "high" but no
 counterfactual ran in that session, the claim is rewritten to "medium" and the reason is printed
-with it — the rule is checked against the trace, not trusted to the prompt.
+with it — the rule is checked against the trace, not trusted to the prompt. The same check covers
+the **graph path** an answer displays: a relationship type no tool returned in that session (the
+audit run showed an invented `-[shared_device]->`) is called out, and the path the tools really
+returned is printed with it — the report never presents an imagined edge as evidence.
 
 It is also **live and interactive in the web console**: click any node on the graph and the
 server runs the same read-only counterfactual against FalkorDB (`GET /api/stress`), the node is
@@ -606,7 +609,7 @@ Selected output (copied from the report):
   own conclusion — proof that state lives in the graph, not the process.
 * **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 30 tools and
   gets live graph data back (`tools: 30`; live `entity_search` + `detect_suspicious_cluster` calls).
-* **Tests:** `tests/test_offline.py` → 34/34 pass (no database required; includes an MCP/agent
+* **Tests:** `tests/test_offline.py` → 36/36 pass (no database required; includes an MCP/agent
   toolbelt parity check and company-brain tests); `compileall` clean. CI runs the suite and a real
   FalkorDB end-to-end job on every push.
 

@@ -345,6 +345,14 @@ class GraphSleuth:
             self._log("  [!] confidence downgraded — no counterfactual ran this session")
             self._emit({"type": "confidence_downgraded", "reason": "no counterfactual"})
 
+        # A displayed graph path is a claim like any other: it has to come from a tool
+        # result, not from the model's imagination.
+        path_note = _unverified_path_note(answer, self.history)
+        if path_note:
+            answer += "\n\n" + path_note
+            self._log("  [!] answer cited a path the tools never returned")
+            self._emit({"type": "unverified_path"})
+
         memory.append_message(self.session_id, "assistant", answer, self.tenant)
         memory.set_session_summary(self.session_id, answer[:600])
         self._learn_playbook(question, complete=not truncated)
@@ -505,6 +513,95 @@ def _downgrade_confidence(answer: str, history: list[dict]) -> str | None:
         f"{answer[: match.start()]}{match.group(1)}"
         f"medium (downgraded — no counterfactual ran){answer[match.end():]}"
     )
+
+
+_RE_PATH_LABEL = re.compile(r"-\[\s*(?:r:)?:?([A-Za-z_][A-Za-z0-9_]*)\s*(?:\{[^{}]*\})?\s*\]\s*-?>")
+_RE_GRAPH_PATH_LINE = re.compile(r"\*\*Graph path\*\*[^\n]*", re.IGNORECASE)
+_RE_NON_MONEY_ID = re.compile(r"\b(?:CASE|AL|HANDOFF)-\d+")
+
+
+def _trace_labels(history: list[dict]) -> set[str]:
+    """Relationship types the tools actually reported in this session.
+
+    Read from results only (never from the arguments a model passed in, which may
+    name a type that does not exist), so a rendered `-[X]->` in the trace is real
+    evidence that `X` exists and a type the answer invents is not in this set.
+    """
+    labels: set[str] = set()
+    for entry in history:
+        result = entry.get("result")
+        if not isinstance(result, dict) or result.get("error"):
+            continue
+        for edge in result.get("edges") or []:  # graph_neighbors
+            if isinstance(edge, dict) and edge.get("type"):
+                labels.add(str(edge["type"]))
+        for step in result.get("path") or []:  # shortest_connection
+            if isinstance(step, dict) and step.get("via"):
+                labels.add(str(step["via"]))
+        for match in _RE_PATH_LABEL.finditer(json.dumps(result, default=str)):
+            labels.add(match.group(1))
+    return labels
+
+
+def _trace_path(history: list[dict]) -> str | None:
+    """The authoritative path a tool rendered, if one did."""
+    narrative = (_last(history, "shortest_connection") or {}).get("narrative")
+    if isinstance(narrative, str) and narrative.strip():
+        return narrative.strip()
+    hops = _flow_hops(_last(history, "trace_money_flow") or {})
+    if hops:
+        rendered = [str(hops[0].get("from"))]
+        for hop in hops:
+            rendered.append(f"-[{hop.get('tx')}]->")
+            rendered.append(str(hop.get("to")))
+        return " ".join(rendered)
+    return None
+
+
+def _trace_path_ids(history: list[dict]) -> set[str]:
+    """Node ids that appear in a path a tool actually returned."""
+    connection = _last(history, "shortest_connection") or {}
+    ids = {str(step.get("node")) for step in connection.get("path") or [] if isinstance(step, dict)}
+    ids.update(re.findall(r"\b[A-Z]+-\d+\b", str(connection.get("narrative") or "")))
+    return ids
+
+
+def _unverified_path_note(answer: str, history: list[dict]) -> str | None:
+    """A caveat when the answer displays a path the tools never returned.
+
+    A live model renders graph paths from its imagination: a real console run showed
+    `-[shared_device]->` and `-[used_by]->`, neither of which exists in the schema. The
+    evidence trail is the authority, so any relationship type in the answer that no
+    tool reported is flagged — and the path the tools *did* return is printed with it,
+    so the reader gets the real one instead of a correction only.
+    """
+    claimed = {match.group(1) for match in _RE_PATH_LABEL.finditer(answer)}
+    unknown = sorted(label for label in claimed if label not in _trace_labels(history))
+    known_ids = _trace_path_ids(history)
+    path_lines = _RE_GRAPH_PATH_LINE.findall(answer)
+    stray_ids = sorted(
+        {
+            match.group(0)
+            for line in path_lines
+            for match in _RE_NON_MONEY_ID.finditer(line)
+            if match.group(0) not in known_ids
+        }
+    )
+    if not unknown and not stray_ids:
+        return None
+    problems: list[str] = []
+    if unknown:
+        rendered = ", ".join(f"`{label}`" for label in unknown)
+        problems.append(f"relationship type(s) the tools never returned: {rendered}")
+    if stray_ids:
+        problems.append(
+            "a money path that runs through nodes no tool returned: " + ", ".join(stray_ids)
+        )
+    note = "> ⚠ **Path not from the evidence trail** — this answer's graph path cites " + "; ".join(problems) + "."
+    authoritative = _trace_path(history)
+    if authoritative:
+        note += f" The path the tools returned: `{authoritative}`"
+    return note
 
 
 def _tool_names(history: list[dict]) -> list[str]:

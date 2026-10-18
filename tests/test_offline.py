@@ -258,6 +258,56 @@ def test_confidence_downgraded_without_counterfactual() -> None:
     assert _downgrade_confidence("**Confidence** — medium, not high: no cf.", history) is None
 
 
+def test_unverified_path_labels_are_flagged() -> None:
+    """A rendered path is only as good as the tool that returned it.
+
+    A live run displayed `-[shared_device]->`, a relationship type that does not
+    exist in the schema, as if it were evidence. The answer is checked against the
+    trace and the real path is printed alongside the caveat.
+    """
+    from graphsleuth.agent import _unverified_path_note
+
+    history = [
+        {
+            "tool": "shortest_connection",
+            "arguments": {},
+            "result": {
+                "narrative": "ACC-9003 -[ORIGINATED]-> TX-9003 -[DESTINED]-> ACC-9004",
+                "path": [
+                    {"node": "ACC-9003", "via": None},
+                    {"node": "TX-9003", "via": "ORIGINATED"},
+                    {"node": "ACC-9004", "via": "DESTINED"},
+                ],
+            },
+        }
+    ]
+    note = _unverified_path_note("**Graph path** — `ACC-9003 -[shared_device]-> ACC-9004`", history)
+    assert note is not None
+    assert "shared_device" in note
+    assert "ACC-9003 -[ORIGINATED]-> TX-9003 -[DESTINED]-> ACC-9004" in note
+    # The same path as the tool rendered it is not second-guessed, and a money path
+    # through a case node the tool itself returned is the tool's call, not the model's.
+    assert _unverified_path_note("**Graph path** — `ACC-9003 -[ORIGINATED]-> TX-9003`", history) is None
+    assert _unverified_path_note("**Verdict** — clean, no path shown.", history) is None
+
+
+def test_unverified_path_flags_invented_case_node() -> None:
+    """A money path that wanders into a case node no tool returned is flagged."""
+    from graphsleuth.agent import _unverified_path_note
+
+    history = [
+        {
+            "tool": "graph_neighbors",
+            "arguments": {},
+            "result": {"edges": [{"from": "ACC-9003", "to": "ACC-9004", "type": "ORIGINATED"}]},
+        }
+    ]
+    note = _unverified_path_note("**Graph path** — `ACC-9003 -[ORIGINATED]-> CASE-9999`", history)
+    assert note is not None and "CASE-9999" in note
+    # Old labels from a previous schema never leak in: only this session counts.
+    assert _unverified_path_note("**Graph path** — `ACC-9003 -[INSIGHT]-> ACC-9004`", history) is not None
+
+
 def test_compose_final_uses_real_results() -> None:
     history = [
         {"tool": "recall", "arguments": {}, "result": {"notes": [{"kind": "episodic", "text": "prior finding"}]}},
