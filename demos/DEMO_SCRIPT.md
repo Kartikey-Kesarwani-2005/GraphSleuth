@@ -247,9 +247,9 @@ errors  : 0
 
 ## 9. MCP (optional, 20s)
 
-Show the config in `README.md` — all twenty-six tools over MCP (stdio), so Claude Desktop or a
+Show the config in `README.md` — all thirty tools over MCP (stdio), so Claude Desktop or a
 teammate's agent works against the same FalkorDB graph with no extra wiring (`GRAPHSLEUTH_TENANT`
-picks the tenant graph per process). Verified with a real client: `initialize` OK, `tools: 26`.
+picks the tenant graph per process). Verified with a real client: `initialize` OK, `tools: 30`.
 
 ## Talking points
 
@@ -262,5 +262,5 @@ picks the tenant graph per process). Verified with a real client: `initialize` O
   without any caller-pasted context.
 * **Tenancy is a graph boundary.** Each tenant gets its own FalkorDB graph, so isolation is
   structural rather than a `WHERE` clause.
-* **No dead ends.** `run_cypher` is a guarded read-only escape hatch for questions the twenty-six tools
+* **No dead ends.** `run_cypher` is a guarded read-only escape hatch for questions the thirty tools
   don't cover.

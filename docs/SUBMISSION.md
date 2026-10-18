@@ -5,7 +5,7 @@
 **Tech:** Python, FalkorDB, Groq/OpenAI-compatible LLM, MCP (stdio), multigraph tenancy, Docker
 
 ## Summary
-GraphSleuth is a graph-first agent system where FalkorDB is the context layer. A single fraud investigation agent (Tracks 01+02) acts on connected data, maintains persistent memory across sessions, learns procedural playbooks, and coordinates via handoffs. A second agent (Track 03) answers org questions over a dedicated company graph. Both share the same 26-tool MCP toolbelt and explain every answer with graph-traced evidence.
+GraphSleuth is a graph-first agent system where FalkorDB is the context layer. A single fraud investigation agent (Tracks 01+02) acts on connected data, maintains persistent memory across sessions, learns procedural playbooks, and coordinates via handoffs. A second agent (Track 03) answers org questions over a dedicated company graph. Both share the same 30-tool MCP toolbelt and explain every answer with graph-traced evidence.
 
 ## Tracks coverage (all three in one project)
 
@@ -53,7 +53,7 @@ python -m graphsleuth.mcp_server  # stdio, 30 tools
 - `demos/LIVE_RUN_3AGENT.md` (triage→investigator→verifier, verdict CONFIRMED)
 
 ## Verification
-- **Offline tests:** `python tests/test_offline.py` → 27/27 PASS (no DB)
+- **Offline tests:** `python tests/test_offline.py` → 32/32 PASS (no DB)
 - **Eval:** `python -m graphsleuth eval` → 11/11 (live FalkorDB)
 - **MCP:** 30 tools (24 fraud + 6 company), schemas match registry
 - **Isolation:** per-tenant multigraph proven

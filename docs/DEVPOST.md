@@ -97,7 +97,7 @@ dedicated second graph: `python -m graphsleuth company` (people, teams, projects
 tickets, chats, decisions) answers *who knows a system*, *who owns it*, *what breaks if it goes
 down*, *why a decision was made* (traced to source), and *what's going stale* — every answer names
 its source nodes (`demos/COMPANY_BRAIN.md`). Track 03 is agentic too: the same six questions are
-tools in the shared 26-tool MCP belt (`python -m graphsleuth company-chat "who knows SYS-ledger-db?"`)
+tools in the shared 30-tool MCP belt (`python -m graphsleuth company-chat "who knows SYS-ledger-db?"`)
 and a web-console mode. For the "why a graph, not SQL/vector" argument, see `docs/WHY_GRAPH.md`.
 
 ## Gallery / links to include

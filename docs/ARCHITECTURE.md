@@ -77,7 +77,7 @@ Before answering, the agent calls `recall()` (memory briefing). After finishing,
 
 ## Tools (shared toolbelt)
 
-- **Fraud (Track 01):** 20 tools: `entity_search`, `graph_neighbors`, `trace_money_flow`, `find_shared_links`, `detect_suspicious_cluster`, `shortest_connection`, `page_rank`, `connected_components`, `community_detection`, `centrality`, `list_alerts`, `create_handoff`, `list_handoffs`, `accept_handoff`, `run_cypher` (read-only), `flag_account`, `open_case`, `add_case_note`, `remember`, `recall`.
+- **Fraud (Track 01):** 24 tools: `entity_search`, `graph_neighbors`, `trace_money_flow`, `find_shared_links`, `detect_suspicious_cluster`, `shortest_connection`, `page_rank`, `connected_components`, `community_detection`, `centrality`, `list_alerts`, `what_if_removed`, `assess_ring_resilience`, `ring_timeline`, `find_similar_rings`, `create_handoff`, `list_handoffs`, `accept_handoff`, `run_cypher` (read-only), `flag_account`, `open_case`, `add_case_note`, `remember`, `recall`.
 - **Company (Track 03):** 6 tools: `who_knows`, `owners_of`, `blast_radius`, `decision_trail`, `knowledge_sources`, `stale_knowledge`.
 - **Total:** 30 tools exposed over **MCP (stdio)** with identical JSON schemas (`mcp_server.py`).
 - **Graph algorithms:** Native FalkorDB procedures (`algo.WCC`, `algo.labelPropagation`, `algo.betweenness`/`HarmonicCentrality`, `algo.pageRank`). Betweenness uses `samplingSeed=42` + sufficient sampling for **exact, reproducible** ranking; `engine` field reports the path used.

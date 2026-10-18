@@ -96,7 +96,7 @@ class GraphSleuth:
         self._scripted = scripted
         self._model = model
         self._on_event = on_event
-        # The fraud agent gets the 22 fraud tools; a company agent passes its own
+        # The fraud agent gets the 24 fraud tools; a company agent passes its own
         # subset (see company.COMPANY_TOOL_SPECS). Same loop either way.
         self.tool_specs = tool_specs if tool_specs is not None else TOOL_SPECS
 

@@ -45,18 +45,22 @@ and it can prove every hop with the tool call that produced it.
                                         │ 30 tools
                     ┌───────────────────┴────────────────────┐
                     ▼                                        ▼
-        read tools (reason over the graph)      write tools (act on the graph)
+        read tools (reason over the graph, 18)  write tools (act on the graph, 6)
         entity_search                          flag_account
         graph_neighbors                        open_case
         trace_money_flow                       add_case_note
         find_shared_links                      remember
         detect_suspicious_cluster              create_handoff
         shortest_connection                    accept_handoff
-        list_alerts                            recall
-        list_handoffs
+        list_alerts / list_handoffs
+        recall
         page_rank / connected_components
         community_detection / centrality
+        what_if_removed / assess_ring_resilience
+        ring_timeline / find_similar_rings
         run_cypher (read-only)
+        company brain (6): who_knows, owners_of, blast_radius,
+                           decision_trail, knowledge_sources, stale_knowledge
                     └───────────────────┬────────────────────┘
                                         ▼
                         ┌───────────────────────────────┐
@@ -225,7 +229,7 @@ A real live run where `120b` ran dry mid-investigation and `20b` finished it is 
 
 ## MCP: the toolbelt is shared infrastructure
 
-`graphsleuth/mcp_server.py` exposes all twenty-six tools over MCP (stdio) — the twenty fraud
+`graphsleuth/mcp_server.py` exposes all thirty tools over MCP (stdio) — the twenty-four fraud
 tools plus the six company-brain tools — so any MCP client —
 Claude Desktop, an IDE agent, another agent on the team — works against the same graph:
 
@@ -245,7 +249,7 @@ Claude Desktop, an IDE agent, another agent on the team — works against the sa
 }
 ```
 
-Verified with a real MCP stdio client: `initialize` OK, `tools: 26`, and live `entity_search` /
+Verified with a real MCP stdio client: `initialize` OK, `tools: 30`, and live `entity_search` /
 `detect_suspicious_cluster` calls returned graph data. `GRAPHSLEUTH_TENANT` selects which tenant
 graph the server process talks to (one graph per process — see
 [Multigraph tenancy](#multigraph-tenancy-one-graph-per-tenant)).
@@ -590,8 +594,8 @@ Selected output (copied from the report):
 * **Cross-session memory:** running `demo` a second time, step 1's `recall` returns the first run's
   own conclusion — proof that state lives in the graph, not the process.
 * **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 30 tools and
-  gets live graph data back (`tools: 26`; live `entity_search` + `detect_suspicious_cluster` calls).
-* **Tests:** `tests/test_offline.py` → 27/27 pass (no database required; includes an MCP/agent
+  gets live graph data back (`tools: 30`; live `entity_search` + `detect_suspicious_cluster` calls).
+* **Tests:** `tests/test_offline.py` → 32/32 pass (no database required; includes an MCP/agent
   toolbelt parity check and company-brain tests); `compileall` clean. CI runs the suite and a real
   FalkorDB end-to-end job on every push.
 

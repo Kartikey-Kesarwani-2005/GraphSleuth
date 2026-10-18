@@ -2505,7 +2505,7 @@ COMPANY_TOOL_SPECS: list[dict] = [
     ),
 ]
 
-# The full toolbelt: the 20 fraud tools plus the 6 company-brain tools.
+# The full toolbelt: the 24 fraud tools plus the 6 company-brain tools.
 ALL_TOOL_SPECS: list[dict] = TOOL_SPECS + COMPANY_TOOL_SPECS
 
 
