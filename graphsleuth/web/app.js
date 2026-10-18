@@ -14,6 +14,11 @@ let focal = "";
 const ring = new Set();
 let highlight = null;
 
+/* Counterfactual stress test (click a node -> /api/stress). When `stress.result`
+ * is set the canvas shows the graph *as if* that entity were deleted: the node
+ * turns into a ghost, its edges fade, and a broken money trail is drawn in red. */
+const stress = { entity: null, result: null, busy: false, before: null };
+
 const LABEL_COLOR = {
   Account: "#4cc9f0", Device: "#b085ff", Transaction: "#37d67a", Person: "#7aa2ff",
   Merchant: "#ffa94d", Alert: "#ff6b6b", Case: "#ffd43b", MemoryNote: "#8a93a8",
@@ -196,27 +201,46 @@ function draw() {
 
   const fmap = new Map([...nodes.values()].map((x) => [x.id, x]));
   const active = highlight ? new Set([highlight.id, ...neighbours(highlight.id)]) : null;
+  const removed = stress.entity;   // node mentally deleted by the stress test
 
   for (const e of edges) {
     const a = fmap.get(e.from), b = fmap.get(e.to);
     if (!a || !b) continue;
+    const touches_removed = removed && (e.from === removed || e.to === removed);
     const on = !active || (active.has(e.from) && active.has(e.to));
-    ctx.strokeStyle = on ? "rgba(120,160,220,0.42)" : "rgba(80,100,140,0.12)";
-    ctx.lineWidth = (active && on) ? 1.6 : 1;
+    if (touches_removed) {
+      ctx.strokeStyle = "rgba(255,90,110,0.55)";   // severed by the counterfactual
+      ctx.setLineDash([5, 4]);
+      ctx.lineWidth = 1.4;
+    } else {
+      ctx.strokeStyle = on ? "rgba(120,160,220,0.42)" : "rgba(80,100,140,0.12)";
+      ctx.setLineDash([]);
+      ctx.lineWidth = (active && on) ? 1.6 : 1;
+    }
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
   }
+  ctx.setLineDash([]);
 
   ctx.font = "10px 'Segoe UI', sans-serif";
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   for (const nd of nodes.values()) {
     const isFocal = nd.id === focal;
+    const isRemoved = removed && nd.id === removed;
     const r = isFocal ? 11 : nd.kind === "ring" || ring.has(nd.id) ? 8 : 6;
-    const dim = active && !active.has(nd.id);
+    const dim = (active && !active.has(nd.id)) || isRemoved;
     ctx.beginPath();
     ctx.arc(nd.x, nd.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = dim ? "rgba(90,105,135,0.35)" : color(nd);
+    ctx.fillStyle = isRemoved ? "rgba(60,70,95,0.25)" : dim ? "rgba(90,105,135,0.35)" : color(nd);
     ctx.fill();
-    if (isFocal || nd.kind === "ring" || ring.has(nd.id) || (highlight && highlight.id === nd.id)) {
+    if (isRemoved) {
+      // ghost of the removed entity: dashed ring + red cross (mentally deleted)
+      ctx.strokeStyle = "rgba(255,90,110,0.9)"; ctx.lineWidth = 1.4;
+      ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(nd.x - r * 0.6, nd.y - r * 0.6); ctx.lineTo(nd.x + r * 0.6, nd.y + r * 0.6);
+      ctx.moveTo(nd.x + r * 0.6, nd.y - r * 0.6); ctx.lineTo(nd.x - r * 0.6, nd.y + r * 0.6);
+      ctx.stroke();
+    } else if (isFocal || nd.kind === "ring" || ring.has(nd.id) || (highlight && highlight.id === nd.id)) {
       ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.lineWidth = 1.4; ctx.stroke();
     }
     if (view.scale > 0.55 && !dim) {
@@ -241,8 +265,8 @@ function loop() { simulate(); draw(); requestAnimationFrame(loop); }
 /* ------------------------------------------------------------------ *
  * canvas interaction: pan + zoom + hover
  * ------------------------------------------------------------------ */
-let dragging = false, last = null;
-canvas.addEventListener("mousedown", (e) => { dragging = true; last = { x: e.clientX, y: e.clientY }; });
+let dragging = false, last = null, downAt = null;
+canvas.addEventListener("mousedown", (e) => { dragging = true; last = { x: e.clientX, y: e.clientY }; downAt = { x: e.clientX, y: e.clientY }; });
 window.addEventListener("mouseup", () => { dragging = false; });
 canvas.addEventListener("mousemove", (e) => {
   if (dragging && last) {
@@ -272,6 +296,74 @@ canvas.addEventListener("wheel", (e) => {
 function toWorld(e) {
   return { x: (e.offsetX - view.tx) / view.scale, y: (e.offsetY - view.ty) / view.scale };
 }
+
+/* ------------------------------------------------------------------ *
+ * counterfactual stress test: click a node -> /api/stress
+ * ------------------------------------------------------------------ */
+async function runStressTest(entityId) {
+  if (!entityId || stress.busy) return;
+  stress.busy = true;
+  $("stress").classList.remove("hidden");
+  $("stressverdict").textContent = "running…";
+  $("stressbody").innerHTML = `<p class="muted">Mentally removing <b>${esc(entityId)}</b> and re-checking the case…</p>`;
+  try {
+    const tenant = ($("tenant").value || "default").trim();
+    const url = "/api/stress?entity=" + encodeURIComponent(entityId) +
+      "&tenant=" + encodeURIComponent(tenant) +
+      "&from=" + encodeURIComponent("ACC-EXT-01") +
+      "&to=" + encodeURIComponent("ACC-9100");
+    const r = await (await fetch(url)).json();
+    stress.entity = entityId;
+    stress.result = r;
+    const impact = r.impact || "—";
+    const rob = r.robustness ?? "—";
+    const verdict = r.verdict || "—";
+    $("stressverdict").innerHTML =
+      `<span class="stress-${esc(impact)}">${esc(impact)}</span> · robustness ${esc(String(rob))}/100 · ${esc(verdict)}`;
+    const p = r.path || {};
+    const rows = [
+      ["Impact", impact],
+      ["Robustness", `${rob}/100`],
+      ["Verdict", verdict],
+      ["Load-bearing", String(r.load_bearing_score ?? "—")],
+      ["Money trail before", p.money_trail_before || "(none)"],
+      ["Money trail after removal", p.money_trail_after || "(none found)"],
+      ["Ring before/after", r.cluster && r.cluster.top_before && r.cluster.top_after
+        ? `${r.cluster.top_before.size} → ${r.cluster.top_after.size} members (score ${r.cluster.top_before.score} → ${r.cluster.top_after.score})`
+        : "—"],
+    ];
+    $("stressbody").innerHTML =
+      `<p>${esc(r.conclusion || "")}</p>` +
+      `<table class="stress-table">${rows.map(([k, v]) =>
+        `<tr><td>${esc(k)}</td><td>${esc(String(v))}</td></tr>`).join("")}</table>` +
+      `<p class="muted">${esc(r.note || "")}</p>`;
+  } catch (err) {
+    $("stressverdict").textContent = "error";
+    $("stressbody").innerHTML = `<p class="muted">Stress test failed: ${esc(String(err))}</p>`;
+  } finally {
+    stress.busy = false;
+  }
+}
+
+function clearStressTest() {
+  stress.entity = null;
+  stress.result = null;
+  $("stress").classList.add("hidden");
+}
+
+$("stressrestore").addEventListener("click", clearStressTest);
+
+canvas.addEventListener("click", (e) => {
+  // Ignore clicks that were actually drags (panning).
+  if (downAt && (Math.abs(e.clientX - downAt.x) > 4 || Math.abs(e.clientY - downAt.y) > 4)) return;
+  const p = toWorld(e);
+  let best = null, bd = 18 * 18;
+  for (const nd of nodes.values()) {
+    const d = (nd.x - p.x) ** 2 + (nd.y - p.y) ** 2;
+    if (d < bd) { bd = d; best = nd; }
+  }
+  if (best) runStressTest(best.id);
+});
 
 /* ------------------------------------------------------------------ *
  * UI: status, memory, streaming investigation
@@ -319,6 +411,7 @@ async function investigate(target, tenant, offline, mode, question) {
   $("steps").innerHTML = "";
   $("verdict").classList.add("hidden");
   $("empty").classList.add("hidden");
+  clearStressTest();
   nodes.clear(); edges.length = 0; ring.clear(); focal = target || question || (mode === "company" ? "SYS-ledger-db" : "ACC-9003");
   document.querySelector("#controls button").disabled = true;
   $("rounds").textContent = "";

@@ -186,6 +186,30 @@ canvas:active { cursor: grabbing; }
 }
 #controls select:focus { border-color: var(--accent); }
 
+/* ------------------------------------------------------------------ *
+ * counterfactual stress test panel
+ * ------------------------------------------------------------------ */
+.stress { border-left: 3px solid #ff5c7a; }
+.stress .stress-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 12.5px; }
+.stress .stress-table td { padding: 4px 8px 4px 0; vertical-align: top; border-bottom: 1px dashed var(--line); }
+.stress .stress-table td:first-child { color: var(--muted); white-space: nowrap; width: 1%; }
+.stress .stress-critical { color: #ff5c7a; font-weight: 700; }
+.stress .stress-high { color: #ffa94d; font-weight: 700; }
+.stress .stress-minor { color: #37d67a; font-weight: 700; }
+.stress .stress-none { color: var(--muted); font-weight: 700; }
+button.ghost {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  margin-top: 6px;
+}
+button.ghost:hover { color: var(--text); border-color: var(--accent); }
+
 @media (max-width: 900px) {
   main { grid-template-columns: 1fr; height: auto; }
   .right { height: 60vh; }

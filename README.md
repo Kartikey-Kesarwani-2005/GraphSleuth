@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml/badge.svg)](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-29%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-30%20passing-brightgreen)
 ![MCP](https://img.shields.io/badge/MCP-28%20tools-8A2BE2)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -406,6 +406,13 @@ all surface this: the verifier will not say `CONFIRMED` if the verdict is a sing
 failure, and the final report prints a **Disruption guidance** line naming the bottlenecks.
 That is "explainable results" with a falsifiable claim attached — anyone can re-run the removal
 and check the numbers themselves.
+
+It is also **live and interactive in the web console**: click any node on the graph and the
+server runs the same read-only counterfactual against FalkorDB (`GET /api/stress`), the node is
+ghosted on the canvas with its edges drawn as severed red dashes, and a panel shows the impact
+badge, robustness `/100`, load-bearing score and the money trail *before → after*. A **Restore**
+button puts the graph back. Nothing is written — the whole demo is one click away from being
+reproduced by a judge.
 
 ---
 

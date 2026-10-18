@@ -92,6 +92,22 @@ def _memory_view(tenant: str) -> dict:
     return {"notes": notes, "cases": cases, "alerts": alerts}
 
 
+def _stress(entity: str, tenant: str, from_id: str = "", to_id: str = "") -> dict:
+    """Live counterfactual: mentally remove one entity and re-check the case.
+
+    Read-only (what_if_removed never writes); runs inside the tenant's own graph.
+    """
+    from .tools import what_if_removed
+
+    with db.tenant_scope(tenant):
+        return what_if_removed(
+            entity,
+            from_id=from_id or "ACC-EXT-01",
+            to_id=to_id or "ACC-9100",
+            max_depth=8,
+        )
+
+
 def _node_list(nodes: dict[str, str], focal: str, ring: list[str] | None = None) -> list[dict]:
     focal = focal or ""
     ring = set(ring or [])
@@ -241,6 +257,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(_graph(params.get("target", "ACC-9003"), params.get("tenant", ""), int(params.get("depth", "2") or 2)))
             elif route == "/api/memory":
                 self._send_json(_memory_view(params.get("tenant", "")))
+            elif route == "/api/stress":
+                self._send_json(
+                    _stress(
+                        params.get("entity", ""),
+                        params.get("tenant", ""),
+                        params.get("from", ""),
+                        params.get("to", ""),
+                    )
+                )
             elif route == "/favicon.ico":
                 self.send_response(204)
                 self.send_header("Content-Length", "0")

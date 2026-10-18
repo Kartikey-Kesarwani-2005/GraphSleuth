@@ -34,6 +34,12 @@
 
       <div id="verdict" class="card verdict hidden"></div>
 
+      <div id="stress" class="card stress hidden">
+        <h2>Counterfactual stress test <span id="stressverdict" class="pill"></span></h2>
+        <div id="stressbody"></div>
+        <button id="stressrestore" type="button" class="ghost">Restore the graph</button>
+      </div>
+
       <div class="card">
         <h2>Live reasoning <span id="rounds" class="pill"></span></h2>
         <ol id="steps" class="steps"></ol>
@@ -58,7 +64,7 @@
         <span><i class="dot System"></i>System</span>
         <span><i class="dot Person"></i>Person</span>
         <span><i class="dot Doc"></i>Doc / Ticket</span>
-        <span class="hint">drag to pan · scroll to zoom</span>
+        <span class="hint">drag to pan · scroll to zoom · click a node to stress-test it</span>
       </div>
     </section>
   </main>

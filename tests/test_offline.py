@@ -656,6 +656,28 @@ def test_web_console_offers_company_mode() -> None:
     assert 'body.get("question")' in post  # the server honours a free-text org question
 
 
+def test_console_click_to_stress_test_is_wired() -> None:
+    """The judge-facing differentiator: click any node in the console and the server runs the
+    read-only counterfactual (`what_if_removed`) live, ghosting the removed node on the canvas
+    and printing robustness/impact. The route, the helper and the front-end must all agree."""
+    import inspect
+
+    from graphsleuth import server
+
+    src = inspect.getsource(server)
+    assert '"/api/stress"' in src          # the route exists
+    assert "def _stress" in src            # and its handler
+    assert "what_if_removed" in inspect.getsource(server._stress)  # it reuses the real tool
+
+    html = (server.WEB_DIR / "index.html").read_text(encoding="utf-8")
+    js = (server.WEB_DIR / "app.js").read_text(encoding="utf-8")
+    css = (server.WEB_DIR / "app.css").read_text(encoding="utf-8")
+    assert 'id="stress"' in html and 'id="stressrestore"' in html
+    assert "/api/stress" in js and "runStressTest" in js
+    assert "stress.entity" in js           # the canvas ghosts the removed node
+    assert ".stress-critical" in css       # impact badge styling ships too
+
+
 if __name__ == "__main__":
     failures = 0
     for name, function in sorted(globals().items()):
