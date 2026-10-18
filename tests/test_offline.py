@@ -156,6 +156,36 @@ def test_readonly_guard_blocks_writes() -> None:
     assert "query must start" not in tools.run_cypher("MATCH (n) WHERE n.text = 'CREATE CASE' RETURN n AS row")
 
 
+def test_readonly_guard_allowlists_procedures() -> None:
+    """A `CALL` reaches code the verb denylist cannot see, so procedures are
+    allowlisted by name: an unknown one is refused before it ever runs."""
+    # write procedures with no forbidden verb in the query text
+    assert "error" in tools.run_cypher("CALL db.idx.fulltext.drop('Account')")
+    assert "error" in tools.run_cypher(
+        "MATCH (n) CALL db.idx.fulltext.createNodeIndex('Account', ['id']) RETURN n AS row"
+    )
+    assert "error" in tools.run_cypher("CALL dbms.security.createUser('x', 'y', false)")
+
+    # the allowlist logic itself
+    assert tools._blocked_procedures("CALL algo.betweenness({})") == []
+    assert tools._blocked_procedures("CALL algo.pageRank.stream()") == []
+    assert tools._blocked_procedures("CALL db.labels() YIELD label") == []
+    assert tools._blocked_procedures("CALL db.relationshipTypes()") == []
+    assert tools._blocked_procedures("CALL dbms.procedures()") == []
+    assert tools._blocked_procedures("MATCH (n) CALL db.idx.fulltext.drop('Account')") == [
+        "db.idx.fulltext.drop"
+    ]
+    # `CALL { ... }` is a subquery, not a procedure call, and stays verb-guarded
+    assert tools._blocked_procedures("CALL { MATCH (n) RETURN n AS row }") == []
+    # a CALL inside a string literal is not a procedure call either
+    assert tools._blocked_procedures(tools._strip_string_literals("RETURN 'CALL evil.drop()' AS row")) == []
+
+    # an allowlisted procedure is not stopped by the guard (it then fails only because
+    # FalkorDB is not running in this offline test)
+    empty = str(tools.run_cypher("CALL db.labels()"))
+    assert "allowlist" not in empty and "read-only tool" not in empty
+
+
 def test_guard_reports_start_phrase() -> None:
     # EXPLAIN and other allowed verbs must pass the guard and reach the database
     # (here it fails only because FalkorDB is not running in this offline test).
@@ -163,6 +193,63 @@ def test_guard_reports_start_phrase() -> None:
     message = str(result)
     assert "query must start" not in message
     assert "read-only tool" not in message
+
+
+def test_unconstrained_path_through_case_machinery_is_refused() -> None:
+    """A chain that only exists by hopping through a case/alert node is investigation
+    machinery, not a link in the payment network. Without `via` it is refused, and the
+    caller gets the crossed nodes plus the relationship types to retry with."""
+    money_chain = {
+        "from": "ACC-A",
+        "to": "ACC-B",
+        "connected": True,
+        "hops": 1,
+        "path": [
+            {"node": "ACC-A", "via": None, "labels": ["Account"]},
+            {"node": "ACC-B", "via": "ORIGINATED", "labels": ["Account"]},
+        ],
+    }
+    ok = tools._guard_unconstrained_path(dict(money_chain), set())
+    assert ok.get("blocked") is not True and ok["path"] == money_chain["path"]
+
+    machinery = {
+        "from": "ACC-A",
+        "to": "ACC-B",
+        "connected": True,
+        "hops": 2,
+        "path": [
+            {"node": "ACC-A", "via": None, "labels": ["Account"]},
+            {"node": "CASE-0001", "via": "INVOLVES", "labels": ["Case"]},
+            {"node": "ACC-B", "via": "INVOLVES", "labels": ["Account"]},
+        ],
+    }
+    blocked = tools._guard_unconstrained_path(dict(machinery), set())
+    assert blocked["blocked"] is True
+    assert "path" not in blocked and "narrative" not in blocked  # no path is handed over
+    assert blocked["crossed"] == [{"node": "CASE-0001", "labels": ["Case"]}]
+    assert "via=['ORIGINATED','DESTINED']" in blocked["hint"]
+
+    # an explicit `via` is the caller's deliberate intent: the same chain comes back
+    allowed = tools._guard_unconstrained_path(dict(machinery), {"INVOLVES"})
+    assert allowed.get("blocked") is not True and allowed["path"] == machinery["path"]
+
+    # the endpoints are the caller's own choice: connecting an account to the case it
+    # is involved in is a legitimate question, so it is not machinery-crossing
+    endpoint_case = {
+        "from": "ACC-A",
+        "to": "CASE-0001",
+        "connected": True,
+        "hops": 1,
+        "path": [
+            {"node": "ACC-A", "via": None, "labels": ["Account"]},
+            {"node": "CASE-0001", "via": "INVOLVES", "labels": ["Case"]},
+        ],
+    }
+    assert tools._guard_unconstrained_path(dict(endpoint_case), set()).get("blocked") is not True
+
+    # an unreachable pair is passed through untouched (no false "blocked" claim)
+    miss = {"from": "ACC-A", "to": "ACC-Z", "connected": False, "note": "no chain"}
+    assert tools._guard_unconstrained_path(dict(miss), set()) == miss
 
 
 def test_explain_collects_path_from_trace() -> None:
@@ -213,6 +300,235 @@ def test_report_markdown_has_sections() -> None:
     markdown = explain.to_markdown("Investigate ACC-9003", result)
     for heading in ("# GraphSleuth investigation report", "## Verdict", "## Evidence trail"):
         assert heading in markdown
+
+
+def test_verified_actions_ignore_failed_calls() -> None:
+    """A write that errored is not an action the agent took.
+
+    The report states "Actions taken (verified from the tool log)", so a rejected
+    call (read-only guard, bad case id, missing entity) must not be listed there as
+    if it had happened.
+    """
+    trace = [
+        {"tool": "entity_search", "arguments": {"query": "ACC-9003"}, "result": {"matches": []}},
+        {"tool": "flag_account", "arguments": {"account_id": "ACC-9003"}, "result": {"flagged": True}},
+        {"tool": "open_case", "arguments": {"title": "x"}, "result": {"error": "no such entity"}},
+        {"tool": "remember", "arguments": {"text": "y"}, "result": {"error": "cypher write blocked"}},
+    ]
+    actions = explain.verified_actions(trace)
+    assert len(actions) == 1
+    assert "flag_account" in actions[0]
+
+
+def test_confidence_downgraded_without_counterfactual() -> None:
+    """A live model's "high" claim is corrected when no counterfactual ran.
+
+    The prompt asks for `what_if_removed` / `assess_ring_resilience` before claiming
+    high confidence; the answer is checked against the trace so the rule cannot be
+    ignored silently.
+    """
+    from graphsleuth.agent import _downgrade_confidence
+
+    history = [{"tool": "entity_search", "arguments": {}, "result": {"matches": [{"id": "ACC-9003"}]}}]
+    answer = "**Verdict** — escalated.\n\n**Confidence** — high. Nothing else is missing."
+    corrected = _downgrade_confidence(answer, history)
+    assert corrected is not None
+    assert "medium (downgraded" in corrected
+    assert "**Confidence** — high" not in corrected
+    # A trace that actually ran the stress test keeps the claim, and so does an
+    # answer that never claimed "high".
+    with_counterfactual = history + [
+        {"tool": "what_if_removed", "arguments": {}, "result": {"robustness": 100}}
+    ]
+    assert _downgrade_confidence(answer, with_counterfactual) is None
+    assert _downgrade_confidence("**Confidence** — low: thin evidence.", history) is None
+    assert _downgrade_confidence("**Confidence** — medium, not high: no cf.", history) is None
+
+
+def test_unverified_path_labels_are_flagged() -> None:
+    """A rendered path is only as good as the tool that returned it.
+
+    A live run displayed `-[shared_device]->`, a relationship type that does not
+    exist in the schema, as if it were evidence. The answer is checked against the
+    trace and the real path is printed alongside the caveat.
+    """
+    from graphsleuth.agent import _unverified_path_note
+
+    history = [
+        {
+            "tool": "shortest_connection",
+            "arguments": {},
+            "result": {
+                "narrative": "ACC-9003 -[ORIGINATED]-> TX-9003 -[DESTINED]-> ACC-9004",
+                "path": [
+                    {"node": "ACC-9003", "via": None},
+                    {"node": "TX-9003", "via": "ORIGINATED"},
+                    {"node": "ACC-9004", "via": "DESTINED"},
+                ],
+            },
+        }
+    ]
+    note = _unverified_path_note("**Graph path** — `ACC-9003 -[shared_device]-> ACC-9004`", history)
+    assert note is not None
+    assert "shared_device" in note
+    assert "ACC-9003 -[ORIGINATED]-> TX-9003 -[DESTINED]-> ACC-9004" in note
+    # The same path as the tool rendered it is not second-guessed, and a money path
+    # through a case node the tool itself returned is the tool's call, not the model's.
+    assert _unverified_path_note("**Graph path** — `ACC-9003 -[ORIGINATED]-> TX-9003`", history) is None
+    assert _unverified_path_note("**Verdict** — clean, no path shown.", history) is None
+
+
+def test_unverified_path_flags_invented_case_node() -> None:
+    """A money path that wanders into a case node no tool returned is flagged."""
+    from graphsleuth.agent import _unverified_path_note
+
+    history = [
+        {
+            "tool": "graph_neighbors",
+            "arguments": {},
+            "result": {"edges": [{"from": "ACC-9003", "to": "ACC-9004", "type": "ORIGINATED"}]},
+        }
+    ]
+    note = _unverified_path_note("**Graph path** — `ACC-9003 -[ORIGINATED]-> CASE-9999`", history)
+    assert note is not None and "CASE-9999" in note
+    # Old labels from a previous schema never leak in: only this session counts.
+    assert _unverified_path_note("**Graph path** — `ACC-9003 -[INSIGHT]-> ACC-9004`", history) is not None
+
+
+def test_tools_doc_is_current() -> None:
+    """docs/TOOLS.md is generated — a new or renamed tool must not leave it stale."""
+    from graphsleuth.tool_docs import DOC_PATH, render_tools_markdown
+
+    assert DOC_PATH.exists(), "docs/TOOLS.md is missing — run `python -m graphsleuth tools --write`"
+    assert DOC_PATH.read_text(encoding="utf-8") == render_tools_markdown()
+
+
+def _csv(directory: Path, name: str, text: str) -> str:
+    path = directory / name
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_csv_import_parses_and_validates() -> None:
+    """Ingestion reads friendly headers and refuses anything it cannot trust.
+
+    Every refusal names the file and the line, because a silently dropped row would
+    make a partially imported file look complete.
+    """
+    import tempfile
+
+    from graphsleuth.ingest import IngestError, load_files
+
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw)
+        accounts = _csv(
+            tmp,
+            "accounts.csv",
+            "account_id,account_type,risk\nACC-1,current,0.4\nACC-2,savings,0.9\n",
+        )
+        transactions = _csv(
+            tmp,
+            "tx.csv",
+            "tx_id,from_account,to_account,amount,ts\nTX-1,ACC-1,ACC-2,5000,2026-02-01T09:00:00Z\n",
+        )
+        devices = _csv(
+            tmp,
+            "devices.csv",
+            "device_id,account,fingerprint\nDEV-1,ACC-1,fp-aa\nDEV-1,ACC-2,fp-aa\n",
+        )
+        bundle = load_files(accounts, transactions, devices_path=devices)
+        assert [account["id"] for account in bundle.accounts] == ["ACC-1", "ACC-2"]
+        assert bundle.accounts[1]["type"] == "savings" and bundle.accounts[1]["risk_score"] == 0.9
+        assert bundle.transactions[0]["from"] == "ACC-1" and bundle.transactions[0]["amount"] == 5000.0
+        assert bundle.transactions[0]["ts"].startswith("2026-02-01T09:00:00")
+        # one device on two accounts is the shared-device signal, not a duplicate id
+        assert len(bundle.devices) == 2
+        assert {device["account"] for device in bundle.devices} == {"ACC-1", "ACC-2"}
+
+        def refuses(expect: str, accounts_path: str, transactions_path: str, **extra: str) -> None:
+            try:
+                load_files(accounts_path, transactions_path, **extra)
+            except IngestError as exc:
+                assert expect in str(exc), f"expected '{expect}' in: {exc}"
+            else:
+                raise AssertionError(f"accepted a file that should have failed: {expect}")
+
+        refuses("missing required column", _csv(tmp, "no_id.csv", "type\ncurrent\n"), transactions)
+        refuses("duplicate id", _csv(tmp, "dup.csv", "id\nACC-1\nACC-1\n"), transactions)
+        refuses(
+            "is not a number",
+            accounts,
+            _csv(tmp, "bad_amount.csv", "id,from,to,amount\nTX-2,ACC-1,ACC-2,lots\n"),
+        )
+        refuses(
+            "is not ISO-8601",
+            accounts,
+            _csv(tmp, "bad_time.csv", "id,from,to,amount,timestamp\nTX-2,ACC-1,ACC-2,5,yesterday\n"),
+        )
+        refuses(
+            "needs 'from' and 'to'",
+            accounts,
+            _csv(tmp, "no_endpoints.csv", "id,from,amount\nTX-2,ACC-1,5\n"),
+        )
+
+
+def test_csv_import_refuses_unknown_accounts() -> None:
+    """A row pointing at an account that is nowhere is an error, not a silent no-op.
+
+    `MATCH (a:Account {id: ...})` writes nothing when the account is missing, so the
+    rows are checked first: refuse the import, or skip them only if asked to.
+    """
+    from graphsleuth.ingest import Bundle, IngestError, filter_unknown_references
+
+    bundle = Bundle(
+        accounts=[
+            {
+                "id": "ACC-1",
+                "type": "current",
+                "status": "active",
+                "risk_score": 0.1,
+                "opened_at": "2026-01-01T00:00:00+00:00",
+            }
+        ],
+        people=[
+            {
+                "id": "P-1",
+                "name": "A",
+                "country": "",
+                "kyc": True,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "account": "ACC-9",
+            }
+        ],
+        devices=[{"id": "DEV-1", "account": "ACC-9", "fingerprint": "fp"}],
+        transactions=[
+            {
+                "id": "TX-1",
+                "from": "ACC-1",
+                "to": "ACC-9",
+                "merchant": "",
+                "amount": 10.0,
+                "ts": "2026-02-01T09:00:00+00:00",
+                "channel": "upi",
+                "currency": "INR",
+                "category": "",
+            }
+        ],
+    )
+    try:
+        filter_unknown_references(bundle, {"ACC-1"}, allow_missing=False)
+    except IngestError as exc:
+        assert "unknown account 'ACC-9'" in str(exc)
+    else:
+        raise AssertionError("an unknown account reference must refuse the import")
+
+    skipped = filter_unknown_references(bundle, {"ACC-1"}, allow_missing=True)
+    assert skipped.dropped and "skipped" in skipped.messages[0]
+    assert not skipped.bundle.people and not skipped.bundle.devices and not skipped.bundle.transactions
+
+    # ACC-9 is already in the graph (not in the file) — that reference is fine.
+    kept = filter_unknown_references(bundle, {"ACC-1", "ACC-9"}, allow_missing=False)
+    assert not kept.dropped and len(kept.bundle.transactions) == 1 and len(kept.bundle.devices) == 1
 
 
 def test_compose_final_uses_real_results() -> None:

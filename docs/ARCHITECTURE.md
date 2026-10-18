@@ -71,13 +71,15 @@ Before answering, the agent calls `recall()` (memory briefing). After finishing,
 2. **Think**: LLM receives system prompt + memory + tool specs (24 fraud or 6 company + shared).
 3. **Act**: LLM selects tools via function/tool calling; each call streamed as `tool_call` event.
 4. **Observe**: Tool executes against FalkorDB (graph reads/writes), returns structured result; streamed as `tool_result` + appended to trace.
-5. **Reason**: Iterate up to `max_rounds` (12–15) until it can produce a confident answer with evidence.
+5. **Reason**: Iterate up to `max_rounds` (default `MAX_TOOL_ROUNDS=20`; the pipeline allocates 8 triage /
+   19 investigator / 10 verifier, where the last round is always reserved for the verdict). If the
+   budget cuts the plan short, the answer says so — a truncated run never reads like a complete one.
 6. **Conclude**: Compose Answer/Evidence/Graph path/Actions; write episodic/semantic/procedural memory; emit `done`.
 7. **Explain**: `explain.py` builds evidence chain, graph facts (nodes/edges) for visualization, and verified actions.
 
 ## Tools (shared toolbelt)
 
-- **Fraud (Track 01):** 20 tools: `entity_search`, `graph_neighbors`, `trace_money_flow`, `find_shared_links`, `detect_suspicious_cluster`, `shortest_connection`, `page_rank`, `connected_components`, `community_detection`, `centrality`, `list_alerts`, `create_handoff`, `list_handoffs`, `accept_handoff`, `run_cypher` (read-only), `flag_account`, `open_case`, `add_case_note`, `remember`, `recall`.
+- **Fraud (Track 01):** 24 tools: `entity_search`, `graph_neighbors`, `trace_money_flow`, `find_shared_links`, `detect_suspicious_cluster`, `shortest_connection`, `page_rank`, `connected_components`, `community_detection`, `centrality`, `list_alerts`, `what_if_removed`, `assess_ring_resilience`, `ring_timeline`, `find_similar_rings`, `create_handoff`, `list_handoffs`, `accept_handoff`, `run_cypher` (read-only), `flag_account`, `open_case`, `add_case_note`, `remember`, `recall`.
 - **Company (Track 03):** 6 tools: `who_knows`, `owners_of`, `blast_radius`, `decision_trail`, `knowledge_sources`, `stale_knowledge`.
 - **Total:** 30 tools exposed over **MCP (stdio)** with identical JSON schemas (`mcp_server.py`).
 - **Graph algorithms:** Native FalkorDB procedures (`algo.WCC`, `algo.labelPropagation`, `algo.betweenness`/`HarmonicCentrality`, `algo.pageRank`). Betweenness uses `samplingSeed=42` + sufficient sampling for **exact, reproducible** ranking; `engine` field reports the path used.

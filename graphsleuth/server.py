@@ -17,6 +17,11 @@ sees each tool call the moment the agent makes it.
 Multigraph: every request carries a `tenant`, and the whole request runs inside
 `db.tenant_scope(tenant)`, so the console can show two tenants side by side and
 neither can read the other's graph.
+
+**Trust model** — there is no authentication: the tenant is chosen by the caller
+and every endpoint can write to the graph. It binds loopback (`127.0.0.1`) by
+default for exactly that reason; keep it there or front it with something that
+authenticates.
 """
 
 from __future__ import annotations
@@ -301,6 +306,19 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def serve(host: str = "127.0.0.1", port: int = 8765) -> None:
+    """Serve the console on `host:port` (loopback by default).
+
+    There is no authentication anywhere in this server: whoever can reach the
+    port can read *and write* any tenant graph, and the tenant is chosen by the
+    caller (`?tenant=` / the request body). That is fine on loopback and nowhere
+    else, so binding a routable interface warns.
+    """
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        print(
+            f"WARNING: the console has NO authentication. Anyone who can reach {host}:{port} can "
+            "read and write every tenant graph. Bind 127.0.0.1 (or put it behind a proxy that "
+            "authenticates) unless that exposure is intentional."
+        )
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"GraphSleuth console  ->  http://{host}:{port}")
     print("  Ctrl+C to stop. The graph is FalkorDB; the agent picks its own tools.")
@@ -316,7 +334,11 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(prog="graphsleuth-serve", description="GraphSleuth web console")
-    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="interface to bind (loopback by default — this server has no authentication)",
+    )
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args(argv)
     serve(args.host, args.port)

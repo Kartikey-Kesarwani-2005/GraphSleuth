@@ -50,6 +50,14 @@ typed relationships, never flat rows.
 * **Separate memory per tenant** — multigraph topology: every tenant gets its own graph
   (`graphsleuth:default`, `graphsleuth:acme`). Isolation is structural, not a WHERE clause — a
   canary note in tenant `acme` is invisible from `default` even under raw Cypher.
+* **Bring your own data** — `python -m graphsleuth import --accounts a.csv --transactions t.csv`
+  loads real accounts and transfers (plus devices, people, merchants, alerts) into the *same* schema
+  the seed builds, so every tool works on it unchanged. It validates before writing (missing
+  columns, duplicate ids, non-numeric amounts, non-ISO-8601 timestamps), refuses rows that point at
+  accounts which exist nowhere — a `MATCH` would drop those silently and leave a partial import
+  looking complete — re-imports as a *sync* rather than an append, and `--dry-run` validates with no
+  database at all. One `eval` check writes four CSVs, imports them, re-imports them and then drives
+  the real handlers against the result.
 * **Show the path behind an answer** — every report ships an evidence chain with ids and
   relationship types, a compact graph path, the tools used, the actions taken, and a confidence
   rating with what is still missing. A zero-dependency **web console** (`python -m graphsleuth serve`)
@@ -63,8 +71,8 @@ typed relationships, never flat rows.
 **Measured on the judges' own terms (verified live, not aspirational):** seed 1702 nodes / 2713
 relationships; demo 15/15 tool calls ok; ring score 41.05 with 6 members; 6-hop money path from
 `ACC-EXT-01` to the collector `ACC-9100`; pipeline handoff created → accepted and case opened;
-`eval` 11/11 checks pass; 20-thread concurrency bench 2307 ops in 4 s (575 ops/s, reads p95 71 ms,
-writes p95 82 ms, 0 errors); MCP client sees all 30 tools; 32/32 offline tests pass. Run
+`eval` 16/16 checks pass; 20-thread concurrency bench 2307 ops in 4 s (575 ops/s, reads p95 71 ms,
+writes p95 82 ms, 0 errors); MCP client sees all 30 tools; 41/41 offline tests pass. Run
 `python -m graphsleuth eval` to reproduce the scorecard yourself.
 
 **Honest engineering notes:** FalkorDB's `ORDER BY` needed the `WITH … ORDER BY … LIMIT … RETURN`
@@ -76,9 +84,9 @@ samples source nodes with a time-based seed by default; the tool pins `samplingS
 `samplingSize` past the node count for an exact, reproducible ranking. Every algorithm result reports
 the `engine` that produced it.
 
-**Try it:** `powershell -ExecutionPolicy Bypass -File .\setup.ps1` (venv → deps → Docker →
-FalkorDB → seed → demo), then put a free `GROQ_API_KEY` in `.env` and re-run — the real model
-takes over the loop. Repo: https://github.com/Kartikey-Kesarwani-2005/GraphSleuth
+**Try it:** `bash setup.sh` (macOS/Linux) or `powershell -ExecutionPolicy Bypass -File .\setup.ps1`
+(Windows) — venv → deps → Docker → FalkorDB → seed → demo. Then put a free `GROQ_API_KEY` in
+`.env` and re-run: the real model takes over the loop. Repo: https://github.com/Kartikey-Kesarwani-2005/GraphSleuth
 
 ---
 
@@ -105,7 +113,7 @@ dedicated second graph: `python -m graphsleuth company` (people, teams, projects
 tickets, chats, decisions) answers *who knows a system*, *who owns it*, *what breaks if it goes
 down*, *why a decision was made* (traced to source), and *what's going stale* — every answer names
 its source nodes (`demos/COMPANY_BRAIN.md`). Track 03 is agentic too: the same six questions are
-tools in the shared 26-tool MCP belt (`python -m graphsleuth company-chat "who knows SYS-ledger-db?"`)
+tools in the shared 30-tool MCP belt (`python -m graphsleuth company-chat "who knows SYS-ledger-db?"`)
 and a web-console mode. For the "why a graph, not SQL/vector" argument, see `docs/WHY_GRAPH.md`.
 
 ## Gallery / links to include

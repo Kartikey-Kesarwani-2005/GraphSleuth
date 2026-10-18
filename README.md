@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml/badge.svg)](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-32%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-41%20passing-brightgreen)
 ![MCP](https://img.shields.io/badge/MCP-30%20tools-8A2BE2)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -47,18 +47,22 @@ and it can prove every hop with the tool call that produced it.
                                         │ 30 tools (24 fraud + 6 company)
                     ┌───────────────────┴────────────────────┐
                     ▼                                        ▼
-        read tools (reason over the graph)      write tools (act on the graph)
+        read tools (reason over the graph, 18)  write tools (act on the graph, 6)
         entity_search                          flag_account
         graph_neighbors                        open_case
         trace_money_flow                       add_case_note
         find_shared_links                      remember
         detect_suspicious_cluster              create_handoff
         shortest_connection                    accept_handoff
-        list_alerts                            recall
-        list_handoffs
+        list_alerts / list_handoffs
+        recall
         page_rank / connected_components
         community_detection / centrality
+        what_if_removed / assess_ring_resilience
+        ring_timeline / find_similar_rings
         run_cypher (read-only)
+        company brain (6): who_knows, owners_of, blast_radius,
+                           decision_trail, knowledge_sources, stale_knowledge
                     └───────────────────┬────────────────────┘
                                         ▼
                         ┌───────────────────────────────┐
@@ -69,6 +73,9 @@ and it can prove every hop with the tool call that produced it.
 
 The agent has no private database. Everything it knows — the fraud network, what previous
 sessions concluded, the playbook it follows — is nodes and edges in one FalkorDB graph.
+
+Every tool, with its arguments and read/write flag, is in **[`docs/TOOLS.md`](docs/TOOLS.md)** —
+generated from the specs, so it cannot drift (`python -m graphsleuth tools`).
 
 ### What the graph has to do (and where it does it)
 
@@ -110,9 +117,40 @@ the demo discovers (`ACC-9001…ACC-9005` funnelling into collector `ACC-9100`).
 
 ---
 
-## Quickstart (Windows)
+## Quickstart
 
-Requirements: Python 3.10+, Docker (for FalkorDB).
+Requirements: Python 3.10+, Docker (for FalkorDB). The steps are the same on every OS — pick your
+shell.
+
+### macOS / Linux
+
+```bash
+# 1. FalkorDB
+docker compose up -d
+
+# 2. Python environment
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+
+# 3. Config (optional — a key is only needed for live-LLM mode)
+cp .env.example .env
+
+# 4. Build the fraud graph
+.venv/bin/python -m graphsleuth seed
+
+# 5. Run the investigation
+.venv/bin/python -m graphsleuth demo --target ACC-9003 --save demos/out/report.md
+```
+
+`setup.sh` does everything end to end — creates the venv if missing, installs the dependencies,
+waits for FalkorDB (on macOS it launches Docker Desktop and waits for the engine), seeds the graph
+and runs the demo:
+
+```bash
+bash setup.sh          # one command from a fresh clone
+```
+
+### Windows (PowerShell)
 
 ```powershell
 # 1. FalkorDB
@@ -132,13 +170,17 @@ copy .env.example .env
 .\.venv\Scripts\python.exe -m graphsleuth demo --target ACC-9003 --save demos/out/report.md
 ```
 
+`setup.ps1` does everything end to end on Windows: it creates the venv if missing, installs the
+dependencies, launches Docker Desktop if the engine is down (waiting for it to come up), brings
+FalkorDB up, seeds the graph and runs the demo — one command from a fresh clone.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
 A sample report from a real run is committed at [`demos/EXAMPLE_REPORT.md`](demos/EXAMPLE_REPORT.md)
 — and if the FalkorDB container ever stops, `docker compose up -d` brings it straight back with the
 graph intact (the data is bind-mounted to `./data/falkordb`).
-
-`setup.ps1` does everything end to end: it creates the venv if missing, installs the dependencies,
-launches Docker Desktop if the engine is down (waiting for it to come up), brings FalkorDB up, seeds
-the graph and runs the demo — one command from a fresh clone.
 
 ### Commands
 
@@ -146,15 +188,67 @@ the graph and runs the demo — one command from a fresh clone.
 |---|---|
 | `python -m graphsleuth status` | check FalkorDB connectivity + node/relationship counts |
 | `python -m graphsleuth seed` | (re)build the synthetic fraud network and baseline memory |
+| `python -m graphsleuth import --accounts a.csv --transactions t.csv` | **bring your own data:** load accounts/transactions (plus optional `--devices`, `--people`, `--merchants`, `--alerts`) from CSV into the same schema, so every tool works on it; `--tenant`, `--reset`, `--allow-missing`, `--dry-run` (see [Bring your own data](#bring-your-own-data-csv-import)) |
 | `python -m graphsleuth demo --target ACC-9003` | run the full scripted investigation, print the evidence trail, optionally `--save report.md` |
 | `python -m graphsleuth pipeline --target ACC-9003` | two agents on one graph: triage → handoff → investigator; add `--verify` for a third adversarial verifier agent; `--save` writes a combined report |
 | `python -m graphsleuth bench --writers 4 --readers 16` | concurrency benchmark: mixed reads/writes with latency percentiles; `--save` writes raw JSON |
-| `python -m graphsleuth eval` | reproducible scorecard: 11 pass/fail checks over the live graph (ring precision, money path, algorithms, memory, tenant isolation, explainability, read-only guard); `--save` writes the JSON |
+| `python -m graphsleuth eval` | reproducible scorecard: 16 pass/fail checks over the live graph (ring precision, money path, algorithms, memory, tenant isolation, explainability, read-only guard), CSV ingestion **plus the agent loop itself** (a full investigate-run must reach a trace-backed verdict, its write ids must match the trace, it must stay honest on an empty graph and show the round-budget caveat when cut short); `--save` writes the JSON |
+| `python -m graphsleuth tools` | print the reference for all 30 tools (purpose, arguments, read/write) — generated from the specs, so it cannot drift; `--write` refreshes [`docs/TOOLS.md`](docs/TOOLS.md) |
 | `python -m graphsleuth memory` | inspect the agent's memory: learned playbooks, notes and open cases for a tenant; `--kind episodic\|semantic\|procedural` filters |
 | `python -m graphsleuth serve` | interactive web console: streams the investigation live and grows the graph as it runs (`--port`, `--host`) |
 | `python -m graphsleuth company` | **Track 03 — Company Brain:** seed a second graph (people, teams, projects, systems, docs, tickets, chats, decisions) and tour six questions — who knows a system, who owns it, what breaks if it goes down, why a decision was made (traced to source), what we know (docs · tickets · chats), and what's going stale (`--system`, `--decision`, `--save`) |
 | `python -m graphsleuth company-chat "who knows SYS-ledger-db?"` | **Track 03 as an agent:** ask an org question and the LLM picks the company tools itself, answering with node ids as citations (`--offline` runs the scripted brain, `--keep` reuses the graph, `--save` writes the answer) |
 | `python -m graphsleuth chat` | interactive session; drives a live model when a key is set (Groq/OpenAI-compatible), else the offline fallback |
+
+### Bring your own data (CSV import)
+
+The demo graph is synthetic, but the investigation is not bound to it. `import` loads your own
+CSVs into the **same schema** `seed` builds — `Account`, `Person`, `Device`, `Merchant`,
+`Transaction`, `Alert` nodes and `OWNS` / `USED_DEVICE` / `ORIGINATED` / `DESTINED` / `PAID` /
+`FLAGGED_BY` edges — so every tool (and the console) works on it unchanged.
+
+```bash
+# accounts.csv:      id,type,status,risk_score,opened_at
+# transactions.csv:  id,from,to,amount,timestamp,channel        (aliases accepted: tx_id, from_account, ts, …)
+# devices.csv:       device_id,account,fingerprint              (one device on many accounts = the shared-device signal)
+# alerts.csv:        id,account,rule,severity,created_at
+# people.csv:        id,name,country,kyc,created_at,account     (optional)
+# merchants.csv:     id,name,category                           (optional)
+
+python -m graphsleuth import --accounts accounts.csv --transactions transactions.csv \
+    --devices devices.csv --alerts alerts.csv --tenant acme --reset
+# → Import — tenant 'acme' (graph 'graphsleuth:acme')
+#     accounts 4 row(s) … graph: 0 → 9 nodes (+9), 0 → 9 relationships (+9)
+```
+
+Then investigate the imported network by driving the agent itself:
+
+```bash
+python -m graphsleuth chat --tenant acme          # live model picks the tools from your ids
+python -m graphsleuth serve --port 8765           # or ask in the console (tenant field: acme)
+```
+
+The scripted `demo` and `pipeline` scripts are written for the seed network (their hardcoded case
+narrative names the demo's own accounts and devices), so they are not the right entry point for
+your data — the live model, and the console, are. Verified on imported CSVs: the agent resolves
+your ids, finds the shared device, runs the counterfactual on it, opens a case, and reports
+`high` confidence only because the stress test really ran.
+
+Rules that keep an import honest:
+
+* **It validates before it writes.** Missing columns, duplicate ids, non-numeric amounts and
+  non-ISO-8601 timestamps are refused with the file and the line number.
+* **A row pointing at an unknown account is an error, not a silent no-op** — the
+  `MATCH (a:Account {id: …})` would otherwise write nothing and leave a partial import looking
+  complete. Add the account, or pass `--allow-missing` to skip those rows (and report how many).
+* **Re-importing is a sync, not an append.** Account/Person/Merchant properties are `SET`;
+  `Transaction`, `Device` and `Alert` nodes are replaced by id, so fixing an endpoint in the CSV
+  and importing again cannot leave a stale money path or a moved device behind.
+* **`--dry-run` needs no FalkorDB at all** — it parses, validates and prints what would happen
+  (cross-references are then checked against the files only, and it says so).
+
+`eval` covers this end to end: one of its checks writes four CSVs, imports them, re-imports them
+(nothing may change) and then drives the real handlers against the result.
 
 ### LLM modes
 
@@ -227,7 +321,7 @@ A real live run where `120b` ran dry mid-investigation and `20b` finished it is 
 
 ## MCP: the toolbelt is shared infrastructure
 
-`graphsleuth/mcp_server.py` exposes all twenty-six tools over MCP (stdio) — the twenty fraud
+`graphsleuth/mcp_server.py` exposes all thirty tools over MCP (stdio) — the twenty-four fraud
 tools plus the six company-brain tools — so any MCP client —
 Claude Desktop, an IDE agent, another agent on the team — works against the same graph:
 
@@ -247,7 +341,7 @@ Claude Desktop, an IDE agent, another agent on the team — works against the sa
 }
 ```
 
-Verified with a real MCP stdio client: `initialize` OK, `tools: 26`, and live `entity_search` /
+Verified with a real MCP stdio client: `initialize` OK, `tools: 30`, and live `entity_search` /
 `detect_suspicious_cluster` calls returned graph data. `GRAPHSLEUTH_TENANT` selects which tenant
 graph the server process talks to (one graph per process — see
 [Multigraph tenancy](#multigraph-tenancy-one-graph-per-tenant)).
@@ -298,12 +392,22 @@ python -m graphsleuth eval
 #   [PASS] money path traced          6 hops: ACC-EXT-01 -> … -> ACC-9100
 #   [PASS] native graph algorithms    1 components, 1702 nodes ranked (betweenness), pageRank via falkordb:algo.pageRank
 #   [PASS] memory round-trip / tenant isolation / procedural learning / verified actions / read-only guard
-#   score: 11/11 checks passed (100%)
+#   [PASS] agent loop reaches a grounded verdict     16 rounds, 15 tool calls, counterfactual=yes
+#   [PASS] agent write ids match the trace           4 write ids claimed, 4 write calls, none invented
+#   [PASS] agent stays honest on an empty graph      verdict=none reached, write calls=0
+#   [PASS] agent truncation is visible               truncated=True, budget note in answer=yes
+#   [PASS] CSV import: files → graph → tools        9 nodes / 9 relationships from 4 CSVs, ring=yes, counterfactual found=True
+#   score: 16/16 checks passed (100%)
 ```
 
 The seed is deterministic (`random.Random(42)`), so the numbers are reproducible run to run. The
-isolation and memory checks run in a throwaway tenant (`eval-harness`) that is dropped afterwards,
-so `eval` never leaves residue in your real graphs.
+isolation, memory, agent-loop and import checks run in throwaway tenants (`eval-harness`,
+`eval-agent`, `eval-empty`, `eval-import`) that are dropped afterwards, so `eval` never leaves
+residue in your real graphs.
+The four `agent …` lines drive `GraphSleuth.ask()` end to end — the same loop a live model runs —
+which is the difference between "the tools work" and "the investigation works". The last line
+writes four CSVs, imports them, re-imports them (nothing may change) and then drives the real
+handlers against the result.
 
 ---
 
@@ -320,6 +424,13 @@ and result — over newline-delimited JSON, grows a force-directed graph of the 
 they are discovered, and shows the verdict, the graph-verified write actions and the tenant's
 memory. Switch the tenant in the UI and the whole view is a different graph on the same FalkorDB
 instance. Uncheck "live model" to run the deterministic offline brain.
+
+> **No authentication — it is a local demo surface, not a deployable service.** The console binds
+> `127.0.0.1` and every endpoint can *write* to the graph; the tenant is chosen by the caller
+> (`?tenant=` / request body). Anyone who can reach the port can read and write **any** tenant
+> graph. Keep it on loopback, or put it behind a proxy that authenticates. `--host 0.0.0.0` (as the
+> Docker image does *inside* the container) prints a warning, and `docker compose --profile app`
+> publishes the port on `127.0.0.1` only.
 
 ---
 
@@ -417,7 +528,12 @@ fingerprint of the ring vs every other candidate group) — so the verdict is a 
 and a base rate, not just a list of links. The stated **Confidence** is generated *from* those
 numbers (a verdict that survives the counterfactual at robustness 100/100 says so; a
 single-point-of-failure verdict can never claim "high"), which makes the agent's self-report
-honest by construction.
+honest by construction. That holds for a live model too: if an answer claims "high" but no
+counterfactual ran in that session, the claim is rewritten to "medium" and the reason is printed
+with it — the rule is checked against the trace, not trusted to the prompt. The same check covers
+the **graph path** an answer displays: a relationship type no tool returned in that session (the
+audit run showed an invented `-[shared_device]->`) is called out, and the path the tools really
+returned is printed with it — the report never presents an imagined edge as evidence.
 
 It is also **live and interactive in the web console**: click any node on the graph and the
 server runs the same read-only counterfactual against FalkorDB (`GET /api/stress`), the node is
@@ -571,7 +687,9 @@ $ python -m graphsleuth demo --target ACC-9003 --save demos/EXAMPLE_REPORT.md
       -> clusters_found=1, clusters_filtered_out=4
   [7] shortest_connection(ACC-EXT-01 -> ACC-9100, via=[ORIGINATED, DESTINED])
       -> connected=True, hops=6
-  [8-11] open_case, add_case_note, flag_account, remember
+  [8-11] what_if_removed, assess_ring_resilience, ring_timeline, find_similar_rings
+      -> device removal impact / ring articulation points / burst window / look-alike rings
+  [12-15] open_case, add_case_note, flag_account, remember
   all 15 tool calls [ok]
 ```
 
@@ -592,13 +710,11 @@ Selected output (copied from the report):
 * **Cross-session memory:** running `demo` a second time, step 1's `recall` returns the first run's
   own conclusion — proof that state lives in the graph, not the process.
 * **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 30 tools and
-  gets live graph data back (live `entity_search` + `detect_suspicious_cluster` calls).
-* **Tests:** `tests/test_offline.py` → **32/32** pass (no database required; includes MCP/agent
-  parity, web console wiring, timeline/pattern, stress-test, proof-pack and counterfactual
-  read-only guard); `compileall` clean. CI runs the suite and a real FalkorDB end-to-end job.
-
-> Run ids (`AL-…`, `NOTE-…`, `MEM-…`, `HANDOFF-…`) are generated per run, so they differ between
-> runs; the committed report files are the source of truth for any specific id.
+  gets live graph data back (`tools: 30`; live `entity_search` + `detect_suspicious_cluster` calls).
+* **Tests:** `tests/test_offline.py` → **41/41 pass** (no database required; includes MCP/agent
+  parity, web console wiring, timeline/pattern, stress-test, proof-pack, counterfactual
+  read-only guard, agent-loop eval checks and CSV import tests); `compileall` clean. CI runs the
+  suite and a real FalkorDB end-to-end job on every push.
 
 > Run ids (`AL-…`, `NOTE-…`, `MEM-…`, `HANDOFF-…`) are generated per run, so they differ between
 > runs; the committed report files are the source of truth for any specific id.
@@ -626,6 +742,7 @@ GraphSleuth/
 │  ├─ config.py        # env config (FalkorDB + LLM)
 │  ├─ db.py            # the only module that talks to FalkorDB (multigraph tenancy)
 │  ├─ seed.py          # synthetic fraud network + baseline memory
+│  ├─ ingest.py        # CSV import: your accounts/transactions/devices → the same schema
 │  ├─ company.py       # Track 03: company-brain graph, tour + agent (`company`, `company-chat`)
 │  ├─ tools.py         # the 30 graph tools (24 fraud reads/algorithms/writes + 6 company-brain)
 │  ├─ memory.py        # episodic / semantic / procedural memory
@@ -635,19 +752,21 @@ GraphSleuth/
 │  ├─ evaluate.py      # reproducible evaluation scorecard (`eval`)
 │  ├─ bench.py         # concurrency benchmark
 │  ├─ explain.py       # evidence trail + Mermaid path rendering
-│  ├─ cli.py           # status / seed / demo / pipeline / bench / eval / memory / company / company-chat / serve / chat
+│  ├─ tool_docs.py     # generates docs/TOOLS.md from the tool specs
+│  ├─ cli.py           # status / seed / import / demo / pipeline / bench / eval / tools / memory / company / serve / chat
 │  ├─ server.py        # zero-dependency web console (`serve`): live stream + growing graph
 │  ├─ web/             # the console's single-page app (plain HTML/CSS/JS, no CDN)
 │  └─ mcp_server.py    # the same 30 tools over MCP (stdio)
 ├─ tests/              # offline unit tests (no database needed)
 ├─ demos/              # demo script + saved reports
-├─ docs/               # submission notes + why-graph comparison
+├─ docs/               # submission notes, generated tool reference, why-graph comparison
 ├─ .github/workflows/  # CI: offline tests + FalkorDB end-to-end
 ├─ data/falkordb/      # graph storage (bind-mounted from the container)
 ├─ docker-compose.yml  # FalkorDB (and an optional `app` service: --profile app)
 ├─ Dockerfile          # the agent + web console image (optional)
 ├─ LICENSE             # MIT
-├─ setup.ps1
+├─ setup.ps1           # one-shot setup (Windows)
+├─ setup.sh            # one-shot setup (macOS / Linux)
 └─ requirements.txt
 ```
 

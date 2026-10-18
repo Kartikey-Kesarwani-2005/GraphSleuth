@@ -114,7 +114,7 @@ graph is not a detail of the implementation — it is the reason the answers are
 ```powershell
 # the multi-hop + component queries, live
 python -m graphsleuth demo --target ACC-9003 --offline     # ring + money path
-python -m graphsleuth eval                                 # 11/11, incl. native algorithms
+python -m graphsleuth eval                                 # 16/16, incl. native algorithms
 python -m graphsleuth company --system SYS-ledger-db       # the transitive blast radius
 ```
 

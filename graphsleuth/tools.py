@@ -36,6 +36,12 @@ MAX_ROWS = 60
 # traversed as if they were part of the fraud network (see shortest_connection).
 INTERNAL_LABELS = {"Handoff", "MemoryNote", "Session", "Message"}
 
+# Case management nodes. Unlike accounts, devices and merchants they are not part
+# of the payment network: a chain that only exists by hopping through a case or an
+# alert is an artefact of the investigation, not evidence of a link between the two
+# entities being compared (see `_guard_unconstrained_path`).
+CASE_MACHINERY_LABELS = {"Case", "Alert"}
+
 # Session that is currently executing tool calls (stamped onto handoffs).
 _session: ContextVar[str] = ContextVar("graphsleuth_session", default="")
 
@@ -558,7 +564,7 @@ def _bfs_path(
         }
 
     queue = [(id_a, None)]
-    parents: dict[str, tuple[str | None, str | None]] = {id_a: (None, None)}
+    parents: dict[str, tuple[str | None, str | None, list[str]]] = {id_a: (None, None, [])}
     found = False
 
     for _ in range(max_depth):
@@ -577,7 +583,7 @@ def _bfs_path(
                     continue
                 if neighbour_id != id_b and INTERNAL_LABELS & set(summary.get("labels") or []):
                     continue
-                parents[neighbour_id] = (current, rel_type)
+                parents[neighbour_id] = (current, rel_type, list(summary.get("labels") or []))
                 if neighbour_id == id_b:
                     found = True
                     break
@@ -602,8 +608,8 @@ def _bfs_path(
     chain: list[dict] = []
     cursor = id_b
     while cursor is not None:
-        parent, rel_type = parents[cursor]
-        chain.append({"node": cursor, "via": rel_type})
+        parent, rel_type, labels = parents[cursor]
+        chain.append({"node": cursor, "via": rel_type, "labels": labels})
         cursor = parent
     chain.reverse()
 
@@ -624,6 +630,58 @@ def _bfs_path(
     }
 
 
+def _machinery_steps(chain: list[dict]) -> list[dict]:
+    """Interior path steps that are case/alert machinery rather than payment-network
+    nodes.
+
+    Endpoints are excluded: the caller chose them, so connecting an account to a case
+    it is involved in is a legitimate request. A case or alert *between* two entities,
+    though, only exists because of the investigation the path is meant to support.
+    """
+    return [
+        step
+        for step in chain[1:-1]
+        if isinstance(step, dict) and CASE_MACHINERY_LABELS & set(step.get("labels") or [])
+    ]
+
+
+def _guard_unconstrained_path(result: dict, allowed: set[str]) -> dict:
+    """Refuse a path whose only route runs through case/alert machinery.
+
+    With no explicit `via`, a breadth-first walk will happily hop ACC -> CASE -> ACC and
+    hand the model a "money path" that is really just two alerts filed on the same
+    account. That chain is blocked instead of narrated; the crossed nodes and the
+    relationship types to retry with are returned so the agent can ask for the path it
+    actually wants (money-only, or the case linkage on purpose).
+    """
+    if allowed or not result.get("connected"):
+        return result
+    crossed = _machinery_steps(result.get("path") or [])
+    if not crossed:
+        return result
+    return {
+        "from": result.get("from"),
+        "to": result.get("to"),
+        "connected": True,
+        "hops": result.get("hops"),
+        "via": [],
+        "blocked": True,
+        "error": (
+            "path between these two entities only exists by stepping through case/alert "
+            "nodes: " + ", ".join(sorted({str(step.get("node")) for step in crossed}))
+            + " — that is investigation machinery, not a link in the payment network"
+        ),
+        "crossed": [
+            {"node": step.get("node"), "labels": step.get("labels")} for step in crossed
+        ],
+        "hint": (
+            "re-run with via=['ORIGINATED','DESTINED'] for the money-only chain, or pass "
+            "the relationship types you mean (e.g. via=['INVOLVES']) to walk these links "
+            "deliberately"
+        ),
+    }
+
+
 def shortest_connection(id_a: str, id_b: str, max_depth: int = 6, via: Any = None) -> dict:
     """Breadth-first search for the shortest chain of relationships between two entities.
 
@@ -634,6 +692,11 @@ def shortest_connection(id_a: str, id_b: str, max_depth: int = 6, via: Any = Non
     Agent-internal nodes (`Handoff`, `MemoryNote`, `Session`, `Message`) are
     never used as stepping stones: the agent's own bookkeeping must not become
     a shortcut through the fraud network it is investigating.
+
+    Without `via`, a path that only exists by routing through case/alert nodes is
+    refused rather than narrated (`blocked: True`, plus the crossed nodes and a
+    retry hint) — such a chain is an artefact of the case files, not evidence that
+    the two entities are linked.
     """
     if isinstance(via, str):
         allowed = {part.strip().upper() for part in via.split(",") if part.strip()}
@@ -641,7 +704,7 @@ def shortest_connection(id_a: str, id_b: str, max_depth: int = 6, via: Any = Non
         allowed = {str(part).strip().upper() for part in via if str(part).strip()}
     else:
         allowed = set()
-    return _bfs_path(id_a, id_b, max_depth, allowed)
+    return _guard_unconstrained_path(_bfs_path(id_a, id_b, max_depth, allowed), allowed)
 
 
 def what_if_removed(entity_id: str, from_id: str = "", to_id: str = "", max_depth: int = 6) -> dict:
@@ -1514,6 +1577,42 @@ READ_ONLY_BLOCKLIST = re.compile(
 )
 ALLOWED_START = ("MATCH", "OPTIONAL", "RETURN", "WITH", "CALL", "UNWIND", "SHOW", "EXPLAIN")
 
+# `CALL <procedure>` reaches code a verb denylist cannot see: a query with no write verb
+# in it can still invoke a write procedure (`db.idx.fulltext.drop`, `dbms.security.*`).
+# Procedures are allowlisted by name instead, so anything unrecognised is refused rather
+# than trusted. `algo.*` is the FalkorDB read-only algorithm family the other tools use;
+# the db.* entries are metadata reads. `CALL { ... }` subqueries are not procedure calls
+# and stay covered by the verb denylist above.
+READ_ONLY_PROCEDURE_PREFIXES = ("algo.",)
+READ_ONLY_PROCEDURES = {
+    "db.labels",
+    "db.relationshiptypes",
+    "db.propertykeys",
+    "db.indexes",
+    "db.constraints",
+    "db.idx.fulltext.querynodes",
+    "db.idx.fulltext.queryrelationships",
+    "dbms.procedures",
+    "dbms.functions",
+    "dbms.components",
+    "dbms.info",
+}
+_RE_CALL_PROCEDURE = re.compile(r"\bCALL\s+([A-Za-z_`][A-Za-z0-9_.`]*)", re.IGNORECASE)
+
+
+def _blocked_procedures(cypher: str) -> list[str]:
+    """Procedure names a read-only query may not call (empty when every call is allowed).
+
+    Operates on the literal-stripped query, so a `CALL` inside a string does not count.
+    """
+    blocked: list[str] = []
+    for match in _RE_CALL_PROCEDURE.finditer(cypher):
+        name = match.group(1).strip("`").lower()
+        if name in READ_ONLY_PROCEDURES or name.startswith(READ_ONLY_PROCEDURE_PREFIXES):
+            continue
+        blocked.append(match.group(1).strip("`"))
+    return blocked
+
 
 # --------------------------------------------------------------------------- #
 # graph algorithms as agent tools (FalkorDB native procedures)
@@ -1731,7 +1830,7 @@ def list_alerts(status: str = "", severity: str = "", limit: int = 10) -> dict:
         ORDER BY al.created_at DESC
         LIMIT $limit
         RETURN [al.id, al.severity, coalesce(al.status, ''), a.id,
-                coalesce(al.reason, ''), al.created_at] AS row
+                coalesce(al.reason, al.rule, ''), al.created_at] AS row
         """,
         {"status": (status or "").strip().lower(), "sev": (severity or "").strip().lower(), "limit": max(1, int(limit))},
     )
@@ -1907,6 +2006,16 @@ def run_cypher(query: str, purpose: str = "") -> dict:
         return {
             "error": "read-only tool: CREATE/DELETE/SET/MERGE/REMOVE/DROP/ALTER/LOAD are not allowed",
             "hint": "use flag_account, open_case, add_case_note or remember for writes",
+        }
+    blocked_calls = _blocked_procedures(stripped)
+    if blocked_calls:
+        return {
+            "error": "read-only tool: procedure(s) not in the read-only allowlist: "
+            + ", ".join(blocked_calls),
+            "hint": (
+                "allowed: algo.*, db.labels, db.relationshipTypes, db.propertyKeys, "
+                "db.indexes, db.constraints, db.idx.fulltext.queryNodes, dbms.procedures"
+            ),
         }
 
     try:
@@ -2230,7 +2339,9 @@ TOOL_SPECS: list[dict] = [
         "shortest_connection",
         "Breadth-first search for the shortest chain of relationships between two entities. "
         "Use it to prove how two suspects are linked and to narrate the path. "
-        "Pass `via` to follow only certain relationship types (e.g. a money-only chain).",
+        "Pass `via` to follow only certain relationship types (e.g. a money-only chain). "
+        "Without `via`, a chain that only exists via case/alert nodes is refused as "
+        "investigation machinery, not a link.",
         {
             "id_a": {"type": "string"},
             "id_b": {"type": "string"},
@@ -2393,6 +2504,9 @@ TOOL_SPECS: list[dict] = [
         "run_cypher",
         "Read-only Cypher escape hatch for questions the other tools cannot answer. "
         "Only MATCH / OPTIONAL MATCH / RETURN / WITH / CALL / UNWIND / SHOW / EXPLAIN. "
+        "`CALL` is restricted to read-only procedures (algo.*, db.labels, "
+        "db.relationshipTypes, db.propertyKeys, db.indexes, db.constraints, "
+        "db.idx.fulltext.queryNodes, dbms.procedures/functions). "
         "Return a single column aliased AS row when possible.",
         {
             "query": {"type": "string", "description": "read-only Cypher"},
@@ -2505,7 +2619,7 @@ COMPANY_TOOL_SPECS: list[dict] = [
     ),
 ]
 
-# The full toolbelt: the 20 fraud tools plus the 6 company-brain tools.
+# The full toolbelt: the 24 fraud tools plus the 6 company-brain tools.
 ALL_TOOL_SPECS: list[dict] = TOOL_SPECS + COMPANY_TOOL_SPECS
 
 

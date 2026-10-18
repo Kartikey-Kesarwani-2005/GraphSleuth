@@ -2,7 +2,7 @@
 
 Any MCP-capable client — Claude Desktop, an IDE agent, another agent in your
 team — can connect to this server and get the whole graph toolbelt: the same
-twenty-eight tools the built-in agents use (22 fraud-investigation tools plus 6
+thirty tools the built-in agents use (24 fraud-investigation tools plus 6
 company-brain tools for Track 03), backed by the same FalkorDB graph and the
 same memory. That is what makes the graph a *shared* context layer rather than
 one agent's private data.

@@ -9,17 +9,25 @@ pass/fail table with the evidence for each line. The seed graph is deterministic
 
 Checks span the whole brief: ring detection and precision, money-path tracing,
 native graph algorithms, episodic/semantic/procedural memory round-trips, tenant
-isolation, the explainability layer (verified actions) and the read-only guard.
-The isolation and memory checks run in a throwaway tenant (`eval-harness`) that
-is dropped afterwards, so `eval` never leaves residue in your real graphs.
+isolation, the explainability layer (verified actions), the read-only guard, CSV
+ingestion — and the agent loop itself: a full investigate-run that must reach a
+trace-backed verdict, write ids that match the trace, stay honest on an empty graph,
+and show the round-budget caveat when it is cut short.
+
+The isolation, memory, agent-loop and import checks run in throwaway tenants
+(`eval-harness`, `eval-agent`, `eval-empty`, `eval-import`) that are dropped
+afterwards, so `eval` never leaves residue in your real graphs.
 """
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Callable
 
-from . import db, explain, memory
-from .tools import HANDLERS, run_cypher
+from . import db, explain, memory, seed
+from .agent import GraphSleuth, build_demo_brain
+from .tools import HANDLERS, MUTATING_TOOLS, run_cypher
 
 HARNESS_TENANT = "eval-harness"
 
@@ -131,16 +139,230 @@ def check_verified_actions(tenant: str) -> tuple[bool, str]:
     trace = [
         {"tool": "recall", "arguments": {}, "result": {}},
         {"tool": "flag_account", "arguments": {"account_id": "ACC-9003"}, "result": {}},
+        {"tool": "open_case", "arguments": {"title": "x"}, "result": {"error": "no such entity"}},
     ]
     actions = explain.verified_actions(trace)
     ok = len(actions) == 1 and "flag_account" in actions[0]
-    return ok, f"read-only ignored, actions={actions}"
+    return ok, f"reads and failed writes ignored, actions={actions}"
 
 
 def check_readonly_guard(tenant: str) -> tuple[bool, str]:
     result = run_cypher("MATCH (n) DETACH DELETE n")
-    ok = "error" in result
+    # a write hidden behind CALL must be refused too (procedure allowlist)
+    procedure = run_cypher("CALL db.idx.fulltext.drop('Account')")
+    ok = "error" in result and "error" in procedure
     return ok, (result.get("error") or "write was NOT blocked")[:90]
+
+
+# --------------------------------------------------------------------------- #
+# agent-loop checks: the whole loop, not just the tools underneath it
+# --------------------------------------------------------------------------- #
+AGENT_TENANT = "eval-agent"  # seeded throwaway graph the loop checks investigate
+EMPTY_TENANT = "eval-empty"  # never seeded: the empty-graph honesty check
+_ACTION_ID = re.compile(r"\b(?:CASE|NOTE|MEM|AL|HANDOFF|SES)-[A-Za-z0-9]+\b")
+_REQUIRED_SECTIONS = (
+    "**Verdict**",
+    "**Evidence chain**",
+    "**Graph path**",
+    "**Tools & queries used**",
+    "**Actions taken**",
+    "**Confidence**",
+)
+
+
+def _agent_answer(question: str, tenant: str, max_rounds: int | None = None) -> dict:
+    """Run the real agent loop end to end (offline scripted brain, no API key)."""
+    agent = GraphSleuth(
+        tenant=tenant,
+        brain=build_demo_brain(),
+        scripted=build_demo_brain(),
+        verbose=False,
+        max_rounds=max_rounds,
+    )
+    return agent.ask(question)
+
+
+def _named_tools(answer: str) -> set[str]:
+    """The tools the answer's own "Tools & queries used" line claims it called."""
+    match = re.search(r"\*\*Tools & queries used\*\*[^A-Za-z]*([^\n]*)", answer)
+    if not match:
+        return set()
+    return {
+        token.strip("`* ")
+        for token in re.split(r"[,;]", match.group(1))
+        if re.fullmatch(r"[a-z][a-z_]+", token.strip("`* "))
+    }
+
+
+def _trace_ids(trace: list[dict]) -> set[str]:
+    """Every CASE/NOTE/AL/MEM id a tool result actually returned."""
+    ids: set[str] = set()
+    for entry in trace:
+        result = entry.get("result")
+        if isinstance(result, dict) and not result.get("error"):
+            ids.update(_ACTION_ID.findall(json.dumps(result, default=str)))
+    return ids
+
+
+def check_agent_grounded_verdict(tenant: str) -> tuple[bool, str]:
+    """The loop itself — not just its tools — reaches a trace-backed verdict."""
+    result = _agent_answer("Investigate ACC-9003 for mule activity", AGENT_TENANT)
+    answer, trace = result["answer"], result["trace"]
+    called = [entry["tool"] for entry in trace]
+    missing = [section for section in _REQUIRED_SECTIONS if section not in answer]
+    unnamed = sorted(_named_tools(answer) - set(called))
+    counterfactual = "what_if_removed" in called and "robustness" in answer.lower()
+    ok = (
+        not missing
+        and not unnamed
+        and len(called) >= 5
+        and result["rounds"] >= 5
+        and "ACC-9003" in answer
+        and counterfactual
+    )
+    return ok, (
+        f"{result['rounds']} rounds, {len(called)} tool calls, "
+        f"counterfactual={'yes' if counterfactual else 'no'}, "
+        f"sections missing={missing or 'none'}, tools claimed but not called={unnamed or 'none'}"
+    )
+
+
+def check_agent_actions_match_trace(tenant: str) -> tuple[bool, str]:
+    """The write ids the answer prints are ids the graph actually returned."""
+    result = _agent_answer("Investigate ACC-9003 for mule activity", AGENT_TENANT)
+    answer, trace = result["answer"], result["trace"]
+    section = re.search(r"\*\*Actions taken\*\*[^A-Za-z]*([^\n]*)", answer)
+    claimed = set(_ACTION_ID.findall(section.group(1))) if section else set()
+    written = _trace_ids(trace)
+    invented = sorted(claimed - written)
+    writes = [entry["tool"] for entry in trace if entry["tool"] in MUTATING_TOOLS]
+    ok = bool(claimed) and not invented and len(writes) >= 3
+    return ok, (
+        f"{len(claimed)} write ids claimed, {len(writes)} write calls, "
+        f"ids the graph never returned={invented or 'none'}"
+    )
+
+
+def check_agent_empty_graph_honest(tenant: str) -> tuple[bool, str]:
+    """On an empty graph the agent says "no verdict" instead of inventing a finding."""
+    result = _agent_answer("Investigate ACC-9003 for mule activity", EMPTY_TENANT)
+    answer = result["answer"]
+    lowered = answer.lower()
+    said_none = "none reached" in lowered
+    claimed_high = "**confidence** — high" in lowered
+    writes = [entry["tool"] for entry in result["trace"] if entry["tool"] in MUTATING_TOOLS]
+    ok = said_none and not claimed_high and not writes
+    return ok, (
+        f"verdict={'none reached' if said_none else 'A FINDING WAS FABRICATED'}, "
+        f"claimed high confidence={claimed_high}, write calls on empty graph={len(writes)}"
+    )
+
+
+def check_agent_truncation_visible(tenant: str) -> tuple[bool, str]:
+    """A run the round budget cut short says so, in the answer and in the result."""
+    result = _agent_answer("Investigate ACC-9003 for mule activity", AGENT_TENANT, max_rounds=3)
+    answer = result["answer"]
+    visible = "Round budget reached" in answer and "MAX_TOOL_ROUNDS" in answer
+    ok = bool(result["truncated"]) and visible
+    return ok, (
+        f"truncated={result['truncated']}, rounds={result['rounds']}, "
+        f"budget note in answer={'yes' if visible else 'NO'}"
+    )
+
+
+IMPORT_TENANT = "eval-import"  # throwaway graph the CSV-import check builds from files
+
+_IMPORT_FILES = {
+    "accounts.csv": """id,type,status,risk_score,opened_at
+ACC-IMP-1,current,active,0.72,2026-01-05T10:00:00+00:00
+ACC-IMP-2,savings,active,0.65,2026-01-06T10:00:00+00:00
+ACC-IMP-C,current,active,0.55,2026-01-07T10:00:00+00:00
+ACC-IMP-D,wallet,active,0.20,2026-01-08T10:00:00+00:00
+""",
+    "transactions.csv": """tx_id,from_account,to_account,amount,ts,channel
+TX-IMP-1,ACC-IMP-1,ACC-IMP-C,45000,2026-02-01T09:00:00+00:00,upi
+TX-IMP-2,ACC-IMP-2,ACC-IMP-C,51000,2026-02-01T09:30:00+00:00,upi
+TX-IMP-3,ACC-IMP-C,ACC-IMP-D,90000,2026-02-01T10:00:00+00:00,neft
+""",
+    "devices.csv": """device_id,account,fingerprint
+DEV-IMP-1,ACC-IMP-1,fp-shared
+DEV-IMP-1,ACC-IMP-2,fp-shared
+""",
+    "alerts.csv": """alert_id,account,rule_id,severity,created_at
+AL-IMP-1,ACC-IMP-1,velocity,high,2026-02-01T11:00:00+00:00
+""",
+}
+
+
+def check_csv_import_roundtrip(tenant: str) -> tuple[bool, str]:
+    """Bringing your own data in: CSV → graph → the same tools see it.
+
+    Writes four small CSVs (with alias headers, to exercise the mapping), imports
+    them into a throwaway tenant, then drives the real handlers against the result —
+    including a second import that must change nothing.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from . import ingest
+
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw)
+        for name, text in _IMPORT_FILES.items():
+            (tmp / name).write_text(text, encoding="utf-8")
+        paths = {name.split(".")[0]: str(tmp / name) for name in _IMPORT_FILES}
+        report = ingest.import_csv(
+            paths["accounts"],
+            paths["transactions"],
+            devices_path=paths["devices"],
+            alerts_path=paths["alerts"],
+            tenant=IMPORT_TENANT,
+            reset=True,
+        )
+        again = ingest.import_csv(
+            paths["accounts"],
+            paths["transactions"],
+            devices_path=paths["devices"],
+            alerts_path=paths["alerts"],
+            tenant=IMPORT_TENANT,
+        )
+        stable = (
+            again["before"]["nodes"] == again["after"]["nodes"]
+            and again["before"]["relationships"] == again["after"]["relationships"]
+        )
+
+    with db.tenant_scope(IMPORT_TENANT):
+        found = HANDLERS["entity_search"](query="ACC-IMP-1")
+        links = HANDLERS["find_shared_links"](account_id="ACC-IMP-1")
+        flow = HANDLERS["trace_money_flow"](account_id="ACC-IMP-1", depth=3)
+        clusters = HANDLERS["detect_suspicious_cluster"](min_signals=2)
+        path = HANDLERS["shortest_connection"](id_a="ACC-IMP-1", id_b="ACC-IMP-D", max_depth=6)
+        counter = HANDLERS["what_if_removed"](
+            entity_id="DEV-IMP-1", from_id="ACC-IMP-1", to_id="ACC-IMP-D", max_depth=6
+        )
+
+    matches = {match["id"] for match in found.get("matches") or []}
+    shared = [link for link in links.get("links") or [] if "DEV-IMP-1" in (link.get("shared_devices") or [])]
+    reached = set((flow.get("outgoing") or {}).get("reached") or [])
+    ring = [cluster for cluster in clusters.get("clusters") or [] if cluster.get("size", 0) >= 3]
+    hops = len(path.get("path") or [])
+    ok = (
+        report["after"]["nodes"] == 9
+        and report["after"]["relationships"] == 9
+        and stable
+        and "ACC-IMP-1" in matches
+        and shared
+        and {"ACC-IMP-C", "ACC-IMP-D"} <= reached
+        and ring
+        and hops >= 5
+        and counter.get("found") is True
+    )
+    return ok, (
+        f"{report['after']['nodes']} nodes / {report['after']['relationships']} relationships from 4 CSVs, "
+        f"re-import stable={stable}, shared device={'yes' if shared else 'no'}, "
+        f"money reached={sorted(reached)}, ring={'yes' if ring else 'no'}, "
+        f"path hops={hops - 1}, counterfactual found={counter.get('found')}"
+    )
 
 
 CHECKS: list[Check] = [
@@ -155,11 +377,24 @@ CHECKS: list[Check] = [
     ("procedural learning", check_procedural_learning),
     ("verified actions (no over-claim)", check_verified_actions),
     ("read-only Cypher guard", check_readonly_guard),
+    ("agent loop reaches a grounded verdict", check_agent_grounded_verdict),
+    ("agent write ids match the trace", check_agent_actions_match_trace),
+    ("agent stays honest on an empty graph", check_agent_empty_graph_honest),
+    ("agent truncation is visible", check_agent_truncation_visible),
+    ("CSV import: files → graph → tools", check_csv_import_roundtrip),
 ]
 
 
 def run(tenant: str = memory.DEFAULT_TENANT) -> dict:
     db.set_tenant(tenant)
+    # Fixture for the agent-loop checks: they need a real network to investigate.
+    # Seeding a throwaway tenant keeps them end-to-end honest without writing into
+    # (or reading privileged data from) the tenant of record.
+    try:
+        with db.tenant_scope(AGENT_TENANT):
+            seed.seed(verbose=False)
+    except Exception:  # noqa: BLE001 - the agent checks report their own failure
+        pass
     results = []
     for name, check in CHECKS:
         try:
@@ -173,10 +408,11 @@ def run(tenant: str = memory.DEFAULT_TENANT) -> dict:
             # run against the harness.
             db.set_tenant(tenant)
         results.append({"check": name, "passed": bool(passed), "detail": detail})
-    try:
-        db.drop_tenant(HARNESS_TENANT)
-    except Exception:  # noqa: BLE001
-        pass
+    for throwaway in (HARNESS_TENANT, AGENT_TENANT, EMPTY_TENANT, IMPORT_TENANT):
+        try:
+            db.drop_tenant(throwaway)
+        except Exception:  # noqa: BLE001
+            pass
     passed_count = sum(1 for r in results if r["passed"])
     return {
         "tenant": tenant,

@@ -5,8 +5,12 @@
     python -m graphsleuth demo [--target ACC-9003] [--save report.md]
     python -m graphsleuth pipeline [--target ACC-9003] [--verify]   # triage -> handoff -> investigator [-> verifier]
     python -m graphsleuth bench [--writers 4 --readers 16]
-    python -m graphsleuth chat [--tenant acme] [--session SES-1234]
+    python -m graphsleuth eval [--save scorecard.json]              # reproducible scorecard
+    python -m graphsleuth memory [--kind procedural]                # playbooks, notes, open cases
+    python -m graphsleuth chat [--tenant acme] [--session SES-1234] [--offline]
     python -m graphsleuth serve [--port 8765]          # interactive web console
+    python -m graphsleuth company [--system SYS-ledger-db --decision ADR-002]
+    python -m graphsleuth company-chat "who knows SYS-ledger-db?"   # Track 03 as an agent
 """
 
 from __future__ import annotations
@@ -21,16 +25,47 @@ from . import db, explain, memory, seed as seed_module
 from .agent import GraphSleuth, build_demo_brain
 from .agents import pipeline_markdown, run_pipeline
 from .config import config
+from .ingest import DEFAULT_COLUMNS as INGEST_COLUMNS
+
+
+def _db_down(exc: Exception) -> int:
+    """One friendly message for an unreachable FalkorDB, and the exit code to use."""
+    print(f"FalkorDB NOT reachable at {config.falkordb_host}:{config.falkordb_port}")
+    print(f"  reason: {type(exc).__name__}: {exc}")
+    print("  start it with:  docker compose up -d")
+    return 1
+
+
+def _preflight(args: argparse.Namespace) -> int | None:
+    """Fail fast (and helpfully) when the graph cannot serve this command.
+
+    Every command except `status` needs a reachable FalkorDB — `status` *is* the
+    diagnostic. `demo` and `pipeline` additionally need a seeded graph: without
+    one the agent investigates an empty database and the offline brain still
+    reports a verdict about nothing.
+
+    Returns an exit code to abort with, or None to continue.
+    """
+    if getattr(args, "tenant", None):
+        db.set_tenant(args.tenant)
+    try:
+        info = db.ping()
+    except Exception as exc:  # noqa: BLE001 - client, auth and connection errors are all "down"
+        return _db_down(exc)
+    if args.command in {"demo", "pipeline"} and not info["nodes"]:
+        tenant = info["tenant"]
+        flag = "" if tenant == db.DEFAULT_TENANT else f" --tenant {tenant}"
+        print(f"Graph '{info['graph']}' is empty — there is nothing to investigate yet.")
+        print(f"  build the synthetic fraud network first:  python -m graphsleuth seed{flag}")
+        return 1
+    return None
 
 
 def cmd_status(_args: argparse.Namespace) -> int:
     try:
         info = db.ping()
     except Exception as exc:  # noqa: BLE001
-        print(f"FalkorDB NOT reachable at {config.falkordb_host}:{config.falkordb_port}")
-        print(f"  reason: {type(exc).__name__}: {exc}")
-        print("  start it with:  docker compose up -d")
-        return 1
+        return _db_down(exc)
     print(f"FalkorDB OK  ->  {info['host']}  (multigraph: one graph per tenant)")
     print(f"  active graph: '{info['graph']}'  (tenant '{info['tenant']}')")
     others = [name for name in info["graphs"] if name != info["graph"]]
@@ -231,7 +266,17 @@ def cmd_company_chat(args: argparse.Namespace) -> int:
 
 
 def cmd_chat(args: argparse.Namespace) -> int:
-    agent = GraphSleuth(tenant=args.tenant, session_id=args.session, model=args.model)
+    def new_agent(session_id: str | None = None) -> GraphSleuth:
+        return GraphSleuth(
+            tenant=args.tenant,
+            session_id=session_id,
+            model=args.model,
+            # `--offline` forces the scripted brain even when a key is configured
+            # (the same override `demo --offline` / `company-chat --offline` use).
+            brain=build_demo_brain() if args.offline else None,
+        )
+
+    agent = new_agent(args.session)
     print(f"GraphSleuth ready. session={agent.session_id} tenant={agent.tenant}")
     print("Type a question, /evidence for the last trail, /new for a fresh session, /exit to quit.\n")
     last: dict | None = None
@@ -246,7 +291,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
         if question in {"/exit", "/quit"}:
             return 0
         if question == "/new":
-            agent = GraphSleuth(tenant=args.tenant)
+            agent = new_agent()
             print(f"New session {agent.session_id}\n")
             continue
         if question == "/evidence":
@@ -255,6 +300,43 @@ def cmd_chat(args: argparse.Namespace) -> int:
         result = agent.ask(question)
         last = result
         print("\n" + result["answer"] + "\n")
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    from . import ingest
+
+    try:
+        report = ingest.import_csv(
+            args.accounts,
+            args.transactions,
+            devices_path=args.devices,
+            people_path=args.people,
+            merchants_path=args.merchants,
+            alerts_path=args.alerts,
+            tenant=args.tenant,
+            reset=args.reset,
+            allow_missing=args.allow_missing,
+            dry_run=args.dry_run,
+        )
+    except ingest.IngestError as exc:
+        print(f"import failed: {exc}")
+        return 2
+    print(ingest.render_report(report))
+    if not report["dry_run"]:
+        print("\nThe tools work on imported data:  python -m graphsleuth status / demo --target <account> / serve")
+    return 0
+
+
+def cmd_tools(args: argparse.Namespace) -> int:
+    from .tool_docs import DOC_PATH, render_tools_markdown
+
+    markdown = render_tools_markdown()
+    if args.write:
+        DOC_PATH.write_text(markdown, encoding="utf-8")
+        print(f"Wrote {DOC_PATH} ({len(markdown.splitlines())} lines)")
+        return 0
+    print(markdown, end="")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -268,6 +350,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_seed.add_argument("--keep", action="store_true", help="append instead of wiping first")
     p_seed.add_argument("--tenant", default=memory.DEFAULT_TENANT, help="seed this tenant's graph")
     p_seed.set_defaults(func=cmd_seed)
+
+    p_import = sub.add_parser("import", help="load your own accounts/transactions/devices from CSV")
+    p_import.add_argument("--accounts", required=True, help=f"CSV: {INGEST_COLUMNS['accounts']}")
+    p_import.add_argument("--transactions", required=True, help=f"CSV: {INGEST_COLUMNS['transactions']}")
+    p_import.add_argument("--devices", default="", help=f"CSV: {INGEST_COLUMNS['devices']}")
+    p_import.add_argument("--people", default="", help=f"CSV: {INGEST_COLUMNS['people']}")
+    p_import.add_argument("--merchants", default="", help=f"CSV: {INGEST_COLUMNS['merchants']}")
+    p_import.add_argument("--alerts", default="", help=f"CSV: {INGEST_COLUMNS['alerts']}")
+    p_import.add_argument("--tenant", default=memory.DEFAULT_TENANT, help="import into this tenant's graph")
+    p_import.add_argument("--reset", action="store_true", help="wipe the tenant's graph first")
+    p_import.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="skip rows referencing unknown accounts instead of refusing the import",
+    )
+    p_import.add_argument("--dry-run", action="store_true", help="parse and validate only (no database needed)")
+    p_import.set_defaults(func=cmd_import)
 
     p_demo = sub.add_parser("demo", help="run the end-to-end investigation (live LLM if configured)")
     p_demo.add_argument("--target", default="ACC-9003", help="account or entity id to investigate")
@@ -306,10 +405,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--save", default="", help="write the scorecard JSON here")
     p_eval.set_defaults(func=cmd_eval)
 
+    p_tools = sub.add_parser("tools", help="tool reference: all 30 tools, generated from the specs")
+    p_tools.add_argument("--write", action="store_true", help="refresh docs/TOOLS.md instead of printing")
+    p_tools.set_defaults(func=cmd_tools)
+
     p_chat = sub.add_parser("chat", help="interactive investigation session")
-    p_chat.add_argument("--tenant", default=memory.DEFAULT_TENANT)
+    p_chat.add_argument("--tenant", default=memory.DEFAULT_TENANT, help="tenant graph to talk to")
     p_chat.add_argument("--session", default=None, help="reuse an existing session id")
     p_chat.add_argument("--model", default=None, help="pin the live brain to one model (skip the fallback chain)")
+    p_chat.add_argument("--offline", action="store_true", help="force the scripted fallback brain")
     p_chat.set_defaults(func=cmd_chat)
 
     p_serve = sub.add_parser("serve", help="interactive web console: stream the investigation + graph")
@@ -373,6 +477,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        # A dry run only reads CSV files, so it must work with the database down.
+        offline_ok = args.command == "import" and getattr(args, "dry_run", False)
+        if args.command != "status" and not offline_ok:
+            abort = _preflight(args)
+            if abort is not None:
+                return abort
         return int(args.func(args) or 0)
     except KeyboardInterrupt:
         return 130

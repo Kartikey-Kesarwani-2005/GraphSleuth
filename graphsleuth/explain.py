@@ -272,10 +272,16 @@ def verified_actions(trace: list[dict]) -> list[str]:
     actions: list[str] = []
     for entry in trace:
         tool = entry.get("tool")
-        if tool in MUTATING_TOOLS:
-            args = entry.get("arguments") or {}
-            rendered = ", ".join(f"{key}={_short(value)}" for key, value in list(args.items())[:3])
-            actions.append(f"`{tool}({rendered})`")
+        if tool not in MUTATING_TOOLS:
+            continue
+        result = entry.get("result")
+        if isinstance(result, dict) and result.get("error"):
+            # The call was attempted and the graph rejected it. "Actions taken"
+            # lists what happened, not what was tried.
+            continue
+        args = entry.get("arguments") or {}
+        rendered = ", ".join(f"{key}={_short(value)}" for key, value in list(args.items())[:3])
+        actions.append(f"`{tool}({rendered})`")
     return actions
 
 

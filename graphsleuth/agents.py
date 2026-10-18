@@ -27,6 +27,7 @@ from .agent import (
     GraphSleuth,
     _cluster_members,
     _dedupe_ids,
+    _evidence_seen,
     _last,
     _ring_summary,
     build_demo_brain,
@@ -120,7 +121,9 @@ def build_triage_brain(target: str) -> ScriptedBrain:
         ("detect_suspicious_cluster", {"min_signals": 2}),
         (
             "create_handoff",
-            lambda history: {
+            lambda history: None
+            if not _evidence_seen(history)
+            else {
                 "to_role": "investigator",
                 "from_role": "triage",
                 "context": (
@@ -133,7 +136,9 @@ def build_triage_brain(target: str) -> ScriptedBrain:
         ),
         (
             "remember",
-            lambda history: {
+            lambda history: None
+            if not _evidence_seen(history)
+            else {
                 "kind": "episodic",
                 "text": (
                     f"Triage on {target}: {_ring_summary(history, target)} — escalated to the "
@@ -202,33 +207,76 @@ def build_verifier_brain(target: str, case_id: str = "") -> ScriptedBrain:
         CASE_STRESS_TEST,
         (
             "add_case_note",
-            lambda history: {
-                "case_id": case_id,
-                "text": (
-                    f"Verification: independently re-checked the {target} case — shared-device "
-                    "links, prior alerts and the money path all reproduce. "
-                    + (
-                        f"Stress test: {(_last(history, 'what_if_removed') or {}).get('conclusion')} "
-                        if (_last(history, "what_if_removed") or {}).get("conclusion")
-                        else ""
-                    )
-                    + "Verdict CONFIRMED."
-                ),
-            },
+            lambda history: None
+            if not _evidence_seen(history)
+            else {"case_id": case_id, "text": _verification_note(target, history)},
         ),
         (
             "remember",
-            lambda history: {
+            lambda history: None
+            if not _evidence_seen(history)
+            else {
                 "kind": "semantic",
-                "text": (
-                    f"Verified case {case_id or '(unlinked)'} on {target}: claims reproduce "
-                    "against the graph — CONFIRMED by the verifier agent."
-                ),
+                "text": _verification_memory(target, case_id, history),
                 "about_ids": _dedupe_ids(_cluster_members(history, target) + ["ACC-9100"]),
             },
         ),
     ]
     return ScriptedBrain(plan=plan, on_finish=compose_verifier_final)
+
+
+def _verification_state(history: list[dict]) -> tuple[bool, str]:
+    """What the verifier's own re-check actually found — shared by prose and note.
+
+    A claim is confirmed only when the independent re-check reproduces it: real
+    shared-device links, a scored cluster, a money path, and a conclusion that
+    survives losing its key link. Anything less is reported as not confirmed,
+    so a note or a memory write can never say "CONFIRMED" the prose contradicts.
+    """
+    links = _last(history, "find_shared_links") or {}
+    cluster = _last(history, "detect_suspicious_cluster") or {}
+    path = _last(history, "shortest_connection") or {}
+    impact = str((_last(history, "what_if_removed") or {}).get("impact") or "")
+    with_device = [link for link in (links.get("links") or []) if link.get("shared_devices")]
+    clusters = cluster.get("clusters") or []
+    path_nodes = path.get("path") or []
+    if impact == "critical":
+        return False, "the conclusion depends on a single link (counterfactual: critical)"
+    if not (with_device and clusters and len(path_nodes) >= 2):
+        return False, (
+            "the graph did not reproduce the shared-device links, scored cluster and money path "
+            "the claim rests on"
+        )
+    return True, ""
+
+
+def _verification_note(target: str, history: list[dict]) -> str:
+    """The case note the verifier writes — it must match the verifier's own verdict."""
+    confirmed, reason = _verification_state(history)
+    counter = (_last(history, "what_if_removed") or {}).get("conclusion")
+    return (
+        f"Verification: independently re-checked the {target} case — "
+        + (
+            "shared-device links, prior alerts and the money path all reproduce. "
+            if confirmed
+            else f"NOT reproduced: {reason}. "
+        )
+        + (f"Stress test: {counter} " if counter else "")
+        + ("Verdict CONFIRMED." if confirmed else "Verdict NOT CONFIRMED.")
+    )
+
+
+def _verification_memory(target: str, case_id: str, history: list[dict]) -> str:
+    """Semantic memory written by the verifier, stated as the verdict really was."""
+    confirmed, reason = _verification_state(history)
+    return (
+        f"Verified case {case_id or '(unlinked)'} on {target}: "
+        + (
+            "claims reproduce against the graph — CONFIRMED by the verifier agent."
+            if confirmed
+            else f"claims did NOT all reproduce — {reason}. NOT CONFIRMED by the verifier agent."
+        )
+    )
 
 
 def compose_verifier_final(question: str, history: list[dict]) -> str:
@@ -249,28 +297,15 @@ def compose_verifier_final(question: str, history: list[dict]) -> str:
     clusters = cluster.get("clusters") or []
     path_nodes = path.get("path") or []
     alert_rows = alerts.get("alerts") or []
-    counter_impact = str(counter.get("impact") or "")
 
-    # A verdict that collapses the moment one link is removed is not confirmed —
-    # that is the whole point of the counterfactual stress test.
-    confirmed = (
-        bool(with_device)
-        and bool(clusters)
-        and len(path_nodes) >= 2
-        and counter_impact != "critical"
-    )
+    confirmed, reason = _verification_state(history)
     lines = [
         f"**Verification** — {'CONFIRMED' if confirmed else 'WEAK'}: "
         + (
             f"{target} reproduces on independent re-check (shared devices, scored cluster, "
             "a real money path, and a verdict that survives the counterfactual stress test)."
             if confirmed
-            else f"{target} could not be fully reproduced from the graph alone"
-            + (
-                " — the conclusion depends on a single link (counterfactual: critical)."
-                if counter_impact == "critical"
-                else "."
-            )
+            else f"{target} could not be fully reproduced from the graph alone — {reason}."
         ),
         "",
         "**Re-checked**",
@@ -287,7 +322,12 @@ def compose_verifier_final(question: str, history: list[dict]) -> str:
             else []
         ),
         "",
-        "**Discrepancies** — none: every claim the investigator made reproduces against the graph.",
+        "**Discrepancies** — "
+        + (
+            "none: every claim the investigator made reproduces against the graph."
+            if confirmed
+            else f"the re-check could not reproduce the claim: {reason}."
+        ),
         "",
     ]
     actions = []
@@ -341,7 +381,7 @@ def run_pipeline(
         role="investigator",
         brain=investigator_brain,
         scripted=build_demo_brain(target, handoff=True),
-        max_rounds=16,  # handoff pickup + the full investigation
+        max_rounds=19,  # 17 scripted steps (handoff pickup + investigation) + the verdict round
         model=model,
     )
     investigation_result = investigator.ask(INVESTIGATE_QUESTION.format(target=target))
