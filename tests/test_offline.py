@@ -16,9 +16,9 @@ from graphsleuth.agent import compose_final  # noqa: E402
 
 
 def test_tool_specs_are_openai_shaped() -> None:
-    assert len(tools.TOOL_SPECS) == 20  # the fraud-investigation toolbelt
+    assert len(tools.TOOL_SPECS) == 21  # the fraud-investigation toolbelt
     assert len(tools.COMPANY_TOOL_SPECS) == 6  # Track 03 company-brain tools
-    assert len(tools.ALL_TOOL_SPECS) == 26  # everything the agents/MCP can call
+    assert len(tools.ALL_TOOL_SPECS) == 27  # everything the agents/MCP can call
     for spec in tools.ALL_TOOL_SPECS:
         function = spec["function"]
         assert spec["type"] == "function"
@@ -42,6 +42,33 @@ def test_graph_algorithm_and_handoff_tools_registered() -> None:
     ):
         assert name in tools.HANDLERS, name
         assert name in {s["function"]["name"] for s in tools.TOOL_SPECS}
+
+
+def test_counterfactual_tool_is_registered_and_read_only() -> None:
+    """Explainability beyond "here is the path": the agent can *prove* its verdict does not
+    hinge on one link by mentally removing a device/account and re-running the analysis.
+
+    The graph must never be mutated by it (it is a mental removal), and it must be part of
+    the agent toolbelt and the MCP toolbelt like every other tool."""
+    import inspect
+
+    assert "what_if_removed" in tools.HANDLERS
+    assert "what_if_removed" in {s["function"]["name"] for s in tools.ALL_TOOL_SPECS}
+    assert "what_if_removed" not in tools.MUTATING_TOOLS  # read-only counterfactual
+
+    spec = next(s for s in tools.ALL_TOOL_SPECS if s["function"]["name"] == "what_if_removed")
+    params = set(spec["function"]["parameters"]["properties"])
+    sig = set(inspect.signature(tools.what_if_removed).parameters)
+    assert sig == params == {"entity_id", "from_id", "to_id", "max_depth"}
+
+    # the shared BFS/cluster cores it reuses must exist (same logic, one implementation)
+    assert callable(tools._bfs_path) and callable(tools._detect_cluster)
+
+    # missing/unknown ids degrade gracefully instead of raising
+    # (no database needed: these return before touching the graph only when the query
+    #  finds nothing, so here we only assert the guard for an empty id)
+    result = tools.what_if_removed("")
+    assert "error" in result
 
 
 def test_multigraph_one_graph_per_tenant() -> None:
@@ -421,7 +448,7 @@ def test_mcp_exposes_every_tool_with_matching_parameters() -> None:
         spec["function"]["name"]: set(spec["function"]["parameters"]["properties"])
         for spec in tools.ALL_TOOL_SPECS
     }
-    assert len(specs) == 26
+    assert len(specs) == len(tools.ALL_TOOL_SPECS)  # MCP mirrors the full toolbelt (27)
     for name, spec_params in specs.items():
         exported = getattr(mcp_server, name, None)
         assert callable(exported), f"{name} is not exposed over MCP"

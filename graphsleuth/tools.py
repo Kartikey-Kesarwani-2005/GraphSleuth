@@ -305,35 +305,42 @@ def find_shared_links(account_id: str) -> dict:
     }
 
 
-def detect_suspicious_cluster(min_signals: int = 2, top: int = 5) -> dict:
-    """Cluster the graph into suspect groups, with the evidence behind each member.
-
-    A shared **device** is the strong link: two accounts seen on the same device
-    is rare and hard to fake, so clusters are grown from those links (union-find).
-    A shared **beneficiary** is deliberately NOT a link on its own — random
-    transfers produce countless shared destinations — it only corroborates a
-    cluster: a destination that collects from 2+ members is attached to the
-    cluster as a collector account."""
+def _detect_cluster(min_signals: int = 2, top: int = 5, exclude: frozenset[str] = frozenset()) -> dict:
+    """Core clustering pass (union-find). `exclude` drops nodes so a counterfactual
+    "what if this entity did not exist?" check reuses the *same* algorithm."""
+    skip = set(exclude)
     min_signals = max(1, int(min_signals))
 
-    device_pairs = db.query(
-        """
-        MATCH (a:Account)-[:USED_DEVICE]->(d:Device)<-[:USED_DEVICE]-(b:Account)
-        WHERE a.id < b.id
-        RETURN [a.id, b.id, d.id] AS row
-        """
-    )
-    beneficiary_pairs = db.query(
-        """
-        MATCH (x:Account)-[:ORIGINATED]->(:Transaction)-[:DESTINED]->(ben)
-              <-[:DESTINED]-(:Transaction)<-[:ORIGINATED]-(y:Account)
-        WHERE x.id < y.id
-        RETURN [x.id, y.id, ben.id] AS row
-        """
-    )
-    alerts = db.query(
-        "MATCH (a:Account)-[:FLAGGED_BY]->(al:Alert) RETURN [a.id, al.severity] AS row"
-    )
+    device_pairs = [
+        row
+        for row in db.query(
+            """
+            MATCH (a:Account)-[:USED_DEVICE]->(d:Device)<-[:USED_DEVICE]-(b:Account)
+            WHERE a.id < b.id
+            RETURN [a.id, b.id, d.id] AS row
+            """
+        )
+        if not (skip & {str(row[0]), str(row[1]), str(row[2])})
+    ]
+    beneficiary_pairs = [
+        row
+        for row in db.query(
+            """
+            MATCH (x:Account)-[:ORIGINATED]->(:Transaction)-[:DESTINED]->(ben)
+                  <-[:DESTINED]-(:Transaction)<-[:ORIGINATED]-(y:Account)
+            WHERE x.id < y.id
+            RETURN [x.id, y.id, ben.id] AS row
+            """
+        )
+        if not (skip & {str(row[0]), str(row[1]), str(row[2])})
+    ]
+    alerts = [
+        row
+        for row in db.query(
+            "MATCH (a:Account)-[:FLAGGED_BY]->(al:Alert) RETURN [a.id, al.severity] AS row"
+        )
+        if str(row[0]) not in skip
+    ]
     risk_rows = db.query("MATCH (a:Account) RETURN [a.id, a.risk_score] AS row")
     risk = {row[0]: row[1] or 0 for row in risk_rows}
 
@@ -464,33 +471,49 @@ def detect_suspicious_cluster(min_signals: int = 2, top: int = 5) -> dict:
             filtered += 1
 
     results.sort(key=lambda item: item["cluster_score"], reverse=True)
-    return {
+    payload = {
         "algorithm": "union-find over shared devices + beneficiary collectors + alerts",
         "min_signals": min_signals,
         "clusters_found": len(results),
         "clusters_filtered_out": filtered,
         "clusters": results[: max(1, int(top))],
     }
+    if skip:
+        payload["excluded"] = sorted(skip)
+    return payload
 
 
-def shortest_connection(id_a: str, id_b: str, max_depth: int = 6, via: Any = None) -> dict:
-    """Breadth-first search for the shortest chain of relationships between two entities.
+def detect_suspicious_cluster(min_signals: int = 2, top: int = 5) -> dict:
+    """Cluster the graph into suspect groups, with the evidence behind each member.
 
-    `via` optionally restricts the walk to specific relationship types, e.g.
-    ``["ORIGINATED", "DESTINED"]`` to follow money only instead of letting the
-    path cut through unrelated nodes such as cases or alerts.
+    A shared **device** is the strong link: two accounts seen on the same device
+    is rare and hard to fake, so clusters are grown from those links (union-find).
+    A shared **beneficiary** is deliberately NOT a link on its own — random
+    transfers produce countless shared destinations — it only corroborates a
+    cluster: a destination that collects from 2+ members is attached to the
+    cluster as a collector account."""
+    return _detect_cluster(min_signals, top)
 
-    Agent-internal nodes (`Handoff`, `MemoryNote`, `Session`, `Message`) are
-    never used as stepping stones: the agent's own bookkeeping must not become
-    a shortcut through the fraud network it is investigating.
-    """
+
+def _bfs_path(
+    id_a: str,
+    id_b: str,
+    max_depth: int,
+    allowed: set[str],
+    skip: frozenset[str] = frozenset(),
+) -> dict:
+    """Breadth-first search shared by `shortest_connection` and the counterfactual
+    `what_if_removed` (same walk, with `skip` nodes treated as if they did not exist)."""
+    skip = set(skip)
     max_depth = max(1, min(int(max_depth), 8))
-    if isinstance(via, str):
-        allowed = {part.strip().upper() for part in via.split(",") if part.strip()}
-    elif isinstance(via, (list, tuple)):
-        allowed = {str(part).strip().upper() for part in via if str(part).strip()}
-    else:
-        allowed = set()
+    if id_a in skip or id_b in skip:
+        return {
+            "from": id_a,
+            "to": id_b,
+            "connected": False,
+            "via": sorted(allowed),
+            "note": f"endpoint {id_a if id_a in skip else id_b} is the removed entity",
+        }
 
     queue = [(id_a, None)]
     parents: dict[str, tuple[str | None, str | None]] = {id_a: (None, None)}
@@ -508,7 +531,7 @@ def shortest_connection(id_a: str, id_b: str, max_depth: int = 6, via: Any = Non
                     continue
                 summary = _node_summary(neighbour)
                 neighbour_id = summary.get("id")
-                if not neighbour_id or neighbour_id in parents:
+                if not neighbour_id or neighbour_id in parents or neighbour_id in skip:
                     continue
                 if neighbour_id != id_b and INTERNAL_LABELS & set(summary.get("labels") or []):
                     continue
@@ -557,6 +580,244 @@ def shortest_connection(id_a: str, id_b: str, max_depth: int = 6, via: Any = Non
         "path": chain,
         "narrative": narrative,
     }
+
+
+def shortest_connection(id_a: str, id_b: str, max_depth: int = 6, via: Any = None) -> dict:
+    """Breadth-first search for the shortest chain of relationships between two entities.
+
+    `via` optionally restricts the walk to specific relationship types, e.g.
+    ``["ORIGINATED", "DESTINED"]`` to follow money only instead of letting the
+    path cut through unrelated nodes such as cases or alerts.
+
+    Agent-internal nodes (`Handoff`, `MemoryNote`, `Session`, `Message`) are
+    never used as stepping stones: the agent's own bookkeeping must not become
+    a shortcut through the fraud network it is investigating.
+    """
+    if isinstance(via, str):
+        allowed = {part.strip().upper() for part in via.split(",") if part.strip()}
+    elif isinstance(via, (list, tuple)):
+        allowed = {str(part).strip().upper() for part in via if str(part).strip()}
+    else:
+        allowed = set()
+    return _bfs_path(id_a, id_b, max_depth, allowed)
+
+
+def what_if_removed(entity_id: str, from_id: str = "", to_id: str = "", max_depth: int = 6) -> dict:
+    """Counterfactual explainability: pretend `entity_id` does not exist and re-check the
+    conclusion the agent would otherwise draw.
+
+    Three graph-native checks, all read-only (the graph is never modified):
+
+    1. **Cluster** — does the mule ring still form without this device/account?
+       (`detect_suspicious_cluster` re-run with the node excluded).
+    2. **Bridge** — do the neighbours of this node still reach each other without it?
+       If not, this node is a bridge and its removal severs paths the evidence leaned on.
+    3. **Path** — with `from_id`/`to_id`, does the chain still exist when the node is skipped?
+       Checked twice: over any relationship, and over the money trail only
+       (`ORIGINATED`/`DESTINED`), because a fraud conclusion leans on the money path.
+
+    Use it before escalating: a verdict that survives the removal of every single link
+    is far stronger than one that depends on exactly one device or one account.
+    """
+    max_depth = max(1, min(int(max_depth), 8))
+    entity_id = str(entity_id or "").strip()
+    if not entity_id:
+        return {"error": "entity_id is required", "example": {"entity_id": "DEV-9001"}}
+
+    found = db.query("MATCH (n {id: $id}) RETURN labels(n) AS row", {"id": entity_id})
+    if not found:
+        return {"found": False, "entity": entity_id, "note": "no node carries that id"}
+    labels = found[0] or []
+    label = str(labels[0]) if isinstance(labels, list) and labels else entity_id.split("-")[0]
+
+    neighbours_rows = db.query(
+        "MATCH (n {id: $id})-[r]-(m) RETURN [type(r), m] AS row LIMIT $limit",
+        {"id": entity_id, "limit": MAX_ROWS},
+    )
+    neighbours: list[dict] = []
+    for rel_type, neighbour in neighbours_rows:
+        summary = _node_summary(neighbour)
+        if summary.get("id"):
+            neighbours.append({"id": summary["id"], "label": (summary.get("labels") or [""])[0], "via": str(rel_type)})
+
+    # --- 1. bridge: can this node's neighbours still reach each other without it? ---
+    # Two probes count as "still connected" when their hop-limited worlds (computed
+    # with the entity deleted) overlap — the overlap is itself a witness path that
+    # avoids the removed node.
+    bridge = {"is_bridge": False, "components": 1, "pairs_separated": 0, "reach_depth": 3}
+    probe = [n["id"] for n in neighbours if n["id"] != entity_id][:10]
+    if len(probe) >= 2:
+        worlds = {start: _reachable(start, frozenset({entity_id}), depth=3) for start in probe}
+        root: dict[str, str] = {start: start for start in probe}
+
+        def _find(x: str) -> str:
+            while root[x] != x:
+                root[x] = root[root[x]]
+                x = root[x]
+            return x
+
+        for index, a in enumerate(probe):
+            for b in probe[index + 1 :]:
+                if worlds[a] & worlds[b] and _find(a) != _find(b):
+                    root[_find(b)] = _find(a)
+        sizes: dict[str, int] = {}
+        for start in probe:
+            group = _find(start)
+            sizes[group] = sizes.get(group, 0) + 1
+        total_pairs = len(probe) * (len(probe) - 1) // 2
+        kept_pairs = sum(size * (size - 1) // 2 for size in sizes.values())
+        bridge = {
+            "is_bridge": len(sizes) > 1,
+            "components": len(sizes),
+            "pairs_separated": max(0, total_pairs - kept_pairs),
+            "reach_depth": 3,
+        }
+
+    # --- 2. cluster: does the ring survive without this node? ---
+    before = _detect_cluster(2, 5)
+    after = _detect_cluster(2, 5, exclude=frozenset({entity_id}))
+    top_before = before["clusters"][0] if before["clusters"] else None
+    top_after = after["clusters"][0] if after["clusters"] else None
+    cluster = {
+        "top_before": {"size": top_before["size"], "score": top_before["cluster_score"]} if top_before else None,
+        "top_after": {"size": top_after["size"], "score": top_after["cluster_score"]} if top_after else None,
+        "members_dropped": sorted(_top_members(top_before) - _top_members(top_after)),
+    }
+
+    # --- 3. path: does a requested chain still exist without this node? ---
+    path: dict | None = None
+    if from_id and to_id:
+        def _check(allowed: set[str]) -> tuple[dict, dict]:
+            base = _bfs_path(str(from_id), str(to_id), max_depth, allowed)
+            counter = _bfs_path(
+                str(from_id), str(to_id), max_depth, allowed, skip=frozenset({entity_id})
+            )
+            return base, counter
+
+        base, counter = _check(set())
+        money_before, money_after = _check({"ORIGINATED", "DESTINED"})
+        path = {
+            "from": str(from_id),
+            "to": str(to_id),
+            "connected_before": bool(base.get("connected")),
+            "connected_after": bool(counter.get("connected")),
+            "hops_before": base.get("hops"),
+            "hops_after": counter.get("hops"),
+            "before": base.get("narrative") or base.get("note"),
+            "after": counter.get("narrative") or counter.get("note"),
+            "money_before": bool(money_before.get("connected")),
+            "money_after": bool(money_after.get("connected")),
+            "money_hops_before": money_before.get("hops"),
+            "money_hops_after": money_after.get("hops"),
+            "money_trail_before": money_before.get("narrative") or money_before.get("note"),
+            "money_trail_after": money_after.get("narrative") or money_after.get("note"),
+            "money_path_before": money_before.get("path") or [],
+            "money_path_after": money_after.get("path") or [],
+        }
+
+    # --- verdict ---
+    impact = "minor"
+    reasons: list[str] = []
+
+    if path:
+        if path["connected_before"] and not path["connected_after"]:
+            impact = "critical"
+            reasons.append(f"every {path['from']} -> {path['to']} chain runs through {entity_id}")
+        elif path["money_before"] and not path["money_after"]:
+            impact = "critical"
+            reasons.append(
+                f"the money trail {path['from']} -> {path['to']} runs only through {entity_id}"
+            )
+        elif path["money_before"] and path["money_after"]:
+            reasons.append(
+                f"the money trail {path['from']} -> {path['to']} still runs without {entity_id} "
+                f"({path['money_hops_before']} -> {path['money_hops_after']} hops)"
+            )
+
+    if bridge["is_bridge"]:
+        if impact != "critical":
+            impact = "high"
+        reasons.append(
+            f"removing {entity_id} splits its {len(probe)} probed neighbours into "
+            f"{bridge['components']} components ({bridge['pairs_separated']} pair(s) lose every path)"
+        )
+
+    dropped = (top_before["size"] - top_after["size"]) if (top_before and top_after) else 0
+    if top_before and not top_after:
+        impact = "critical"
+        reasons.append("the top cluster disappears entirely without this node")
+    elif top_before and top_after and dropped >= 2:
+        if impact == "minor":
+            impact = "high"
+        reasons.append(
+            f"the top cluster shrinks from {top_before['size']} to {top_after['size']} member(s), "
+            f"score {top_before['cluster_score']} -> {top_after['cluster_score']}"
+        )
+    elif top_after:
+        reasons.append(
+            f"the ring still holds without {entity_id} "
+            f"({top_after['size']} of {top_before['size']} members remain, "
+            f"score {top_before['cluster_score']} -> {top_after['cluster_score']})"
+            if dropped
+            else f"the ring still holds without {entity_id} "
+            f"({top_after['size']} members, score {top_after['cluster_score']})"
+        )
+    if not reasons:
+        reasons.append(f"{entity_id} is not load-bearing for the current conclusion")
+
+    return {
+        "found": True,
+        "entity": entity_id,
+        "label": label,
+        "removed_edges": len(neighbours_rows),
+        "neighbours": neighbours[:20],
+        "bridge": bridge,
+        "cluster": cluster,
+        "path": path,
+        "impact": impact,
+        "conclusion": f"Removing {entity_id} ({impact}): " + "; ".join(reasons) + ".",
+        "note": "read-only counterfactual — the graph was NOT modified.",
+    }
+
+
+def _top_members(cluster: dict | None) -> set[str]:
+    return {str(m.get("account")) for m in ((cluster or {}).get("members") or [])}
+
+
+def _reachable(start: str, skip: frozenset[str], depth: int = 3, budget: int = 300) -> set[str]:
+    """Nodes reachable from `start` within `depth` hops, treating `skip` as absent.
+
+    `budget` caps how many nodes one walk may visit so a hub's counterfactual never
+    turns into a full-graph traversal on a large tenant.
+    """
+    blocked = set(skip)
+    seen = {start}
+    frontier = [start]
+    for _ in range(max(1, depth)):
+        nxt: list[str] = []
+        for current in frontier:
+            rows = db.query(
+                "MATCH (c {id: $id})-[r]-(n) RETURN n AS row LIMIT $limit",
+                {"id": current, "limit": MAX_ROWS},
+            )
+            for row in rows:
+                # `RETURN n AS row` arrives as the node itself (already JSON), but
+                # tolerate a wrapped cell so the walk never depends on that detail.
+                cell = row[0] if isinstance(row, (list, tuple)) and row else row
+                summary = _node_summary(cell)
+                neighbour = summary.get("id")
+                if not neighbour or neighbour in seen or neighbour in blocked:
+                    continue
+                if INTERNAL_LABELS & set(summary.get("labels") or []):
+                    continue
+                seen.add(neighbour)
+                if len(seen) >= budget:
+                    return seen
+                nxt.append(neighbour)
+        frontier = nxt
+        if not frontier:
+            break
+    return seen
 
 
 READ_ONLY_BLOCKLIST = re.compile(
@@ -1177,6 +1438,7 @@ HANDLERS: dict[str, Callable[..., dict]] = {
     "find_shared_links": find_shared_links,
     "detect_suspicious_cluster": detect_suspicious_cluster,
     "shortest_connection": shortest_connection,
+    "what_if_removed": what_if_removed,
     "page_rank": page_rank,
     "connected_components": connected_components,
     "community_detection": community_detection,
@@ -1287,6 +1549,20 @@ TOOL_SPECS: list[dict] = [
             },
         },
         ["id_a", "id_b"],
+    ),
+    _spec(
+        "what_if_removed",
+        "Counterfactual explainability: mentally delete one entity (a device, account or person) "
+        "and re-check the conclusion — does the mule ring still form, do its neighbours still "
+        "reach each other, and do a chain and the money trail still exist without it? Call it "
+        "before you escalate, so the verdict provably does not hinge on a single link. Read-only.",
+        {
+            "entity_id": {"type": "string", "description": "node id to remove mentally, e.g. 'DEV-9001' or 'ACC-9100'"},
+            "from_id": {"type": "string", "description": "optional: start of a chain to re-check, e.g. 'ACC-EXT-01'"},
+            "to_id": {"type": "string", "description": "optional: end of a chain to re-check, e.g. 'ACC-9100'"},
+            "max_depth": {"type": "integer", "description": "hops for the chain check, default 6"},
+        },
+        ["entity_id"],
     ),
     _spec(
         "page_rank",

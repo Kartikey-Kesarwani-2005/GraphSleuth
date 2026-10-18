@@ -393,6 +393,17 @@ def build_demo_brain(target: str = "ACC-9003", handoff: bool = False) -> Scripte
             },
         ),
         (
+            # Counterfactual stress test: act only if the conclusion survives the
+            # removal of the shared device the case leans on (read-only).
+            "what_if_removed",
+            {
+                "entity_id": "DEV-9001",
+                "from_id": "ACC-EXT-01",
+                "to_id": "ACC-9100",
+                "max_depth": 8,
+            },
+        ),
+        (
             "open_case",
             lambda history: {
                 "title": f"Mule ring around {target}",
@@ -519,6 +530,12 @@ def compose_final(question: str, history: list[dict]) -> str:
     lines.append("")
     lines.append("**Graph path**")
     lines.append(path.get("narrative") or "(no single path found)")
+
+    counter = _last(history, "what_if_removed") or {}
+    if counter.get("conclusion"):
+        lines.append("")
+        lines.append("**Counterfactual check**")
+        lines.append(str(counter["conclusion"]))
 
     lines.append("")
     lines.append("**Members flagged by the clustering algorithm**")

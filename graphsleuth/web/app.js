@@ -73,6 +73,16 @@ function ingest(tool, r) {
     for (let i = 0; i < p.length - 1; i++) addEdge(String(p[i].node), String(p[i + 1].node), String(p[i + 1].via));
   } else if (tool === "detect_suspicious_cluster") {
     (r.clusters || []).forEach((c) => (c.members || []).forEach((m) => { addNode(m.account, "Account"); ring.add(m.account); }));
+  } else if (tool === "what_if_removed") {
+    addNode(r.entity, r.label || String(r.entity || "").split("-")[0]);
+    (r.neighbours || []).forEach((n) => {
+      if (!n.id) return;
+      addNode(String(n.id), n.label || "");
+      addEdge(String(n.id), String(r.entity), String(n.via || "LINKED"));
+    });
+    const mp = ((r.path || {}).money_path_before) || [];
+    mp.forEach((s) => addNode(String(s.node)));
+    for (let i = 0; i < mp.length - 1; i++) addEdge(String(mp[i].node), String(mp[i + 1].node), String(mp[i + 1].via));
   } else if (tool === "who_knows") {
     addNode(r.system, "System");
     (r.people || []).forEach((p) => { addNode(p.person, "Person"); addEdge(p.person, r.system, "WORKED_ON"); });

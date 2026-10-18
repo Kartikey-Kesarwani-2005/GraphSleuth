@@ -110,6 +110,21 @@ def _facts_into(entry: dict, nodes: dict[str, str], edges: list[tuple[str, str, 
         for previous, step in zip(path, path[1:]):
             edges.append((str(previous.get("node")), str(step.get("node")), str(step.get("via"))))
 
+    elif tool == "what_if_removed":
+        entity = str(result.get("entity") or "")
+        add_node(entity, str(result.get("label") or ""))
+        for neighbour in result.get("neighbours", []) or []:
+            other = str(neighbour.get("id") or "")
+            if not other:
+                continue
+            add_node(other, str(neighbour.get("label") or ""))
+            edges.append((other, entity, str(neighbour.get("via") or "LINKED")))
+        steps = (result.get("path") or {}).get("money_path_before") or []
+        for step in steps:
+            add_node(str(step.get("node")))
+        for previous, step in zip(steps, steps[1:]):
+            edges.append((str(previous.get("node")), str(step.get("node")), str(step.get("via"))))
+
     elif tool == "detect_suspicious_cluster":
         for cluster in result.get("clusters", []) or []:
             for member in cluster.get("members", []) or []:

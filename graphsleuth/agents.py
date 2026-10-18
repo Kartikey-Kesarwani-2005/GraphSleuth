@@ -218,12 +218,28 @@ def build_verifier_brain(target: str, case_id: str = "") -> ScriptedBrain:
             },
         ),
         (
+            # Adversarial stress test: the verdict must survive losing its key link.
+            "what_if_removed",
+            {
+                "entity_id": "DEV-9001",
+                "from_id": "ACC-EXT-01",
+                "to_id": "ACC-9100",
+                "max_depth": 8,
+            },
+        ),
+        (
             "add_case_note",
             lambda history: {
                 "case_id": case_id,
                 "text": (
                     f"Verification: independently re-checked the {target} case — shared-device "
-                    "links, prior alerts and the money path all reproduce. Verdict CONFIRMED."
+                    "links, prior alerts and the money path all reproduce. "
+                    + (
+                        f"Stress test: {(_last(history, 'what_if_removed') or {}).get('conclusion')} "
+                        if (_last(history, "what_if_removed") or {}).get("conclusion")
+                        else ""
+                    )
+                    + "Verdict CONFIRMED."
                 ),
             },
         ),
@@ -251,6 +267,7 @@ def compose_verifier_final(question: str, history: list[dict]) -> str:
     cluster = _last(history, "detect_suspicious_cluster") or {}
     alerts = _last(history, "list_alerts") or {}
     path = _last(history, "shortest_connection") or {}
+    counter = _last(history, "what_if_removed") or {}
     note = _last(history, "add_case_note") or {}
     memo = _last(history, "remember") or {}
 
@@ -259,15 +276,28 @@ def compose_verifier_final(question: str, history: list[dict]) -> str:
     clusters = cluster.get("clusters") or []
     path_nodes = path.get("path") or []
     alert_rows = alerts.get("alerts") or []
+    counter_impact = str(counter.get("impact") or "")
 
-    confirmed = bool(with_device) and bool(clusters) and len(path_nodes) >= 2
+    # A verdict that collapses the moment one link is removed is not confirmed —
+    # that is the whole point of the counterfactual stress test.
+    confirmed = (
+        bool(with_device)
+        and bool(clusters)
+        and len(path_nodes) >= 2
+        and counter_impact != "critical"
+    )
     lines = [
         f"**Verification** — {'CONFIRMED' if confirmed else 'WEAK'}: "
         + (
             f"{target} reproduces on independent re-check (shared devices, scored cluster, "
-            "and a real money path)."
+            "a real money path, and a verdict that survives the counterfactual stress test)."
             if confirmed
-            else f"{target} could not be fully reproduced from the graph alone."
+            else f"{target} could not be fully reproduced from the graph alone"
+            + (
+                " — the conclusion depends on a single link (counterfactual: critical)."
+                if counter_impact == "critical"
+                else "."
+            )
         ),
         "",
         "**Re-checked**",
@@ -278,6 +308,11 @@ def compose_verifier_final(question: str, history: list[dict]) -> str:
         f"- money path: {' -> '.join(str(step['node']) for step in path_nodes)}"
         if path_nodes
         else "- money path: none found",
+        *(
+            [f"- counterfactual stress test: {counter['conclusion']}"]
+            if counter.get("conclusion")
+            else []
+        ),
         "",
         "**Discrepancies** — none: every claim the investigator made reproduces against the graph.",
         "",

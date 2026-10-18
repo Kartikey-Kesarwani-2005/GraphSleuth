@@ -108,6 +108,19 @@ def shortest_connection(
     return _call("shortest_connection", id_a=id_a, id_b=id_b, max_depth=max_depth, via=via or [])
 
 
+@server.tool(description="Counterfactual explainability: pretend one entity does not exist and re-check the conclusion — does the ring still form, do its neighbours still reach each other, and does a chain still exist without it? Read-only.")
+def what_if_removed(
+    entity_id: str, from_id: str = "", to_id: str = "", max_depth: int = 6
+) -> str:
+    return _call(
+        "what_if_removed",
+        entity_id=entity_id,
+        from_id=from_id,
+        to_id=to_id,
+        max_depth=max_depth,
+    )
+
+
 @server.tool(description="Read-only Cypher escape hatch. Only MATCH/OPTIONAL MATCH/RETURN/WITH/CALL/UNWIND/SHOW/EXPLAIN.")
 def run_cypher(query: str, purpose: str = "") -> str:
     return _call("run_cypher", query=query, purpose=purpose)
