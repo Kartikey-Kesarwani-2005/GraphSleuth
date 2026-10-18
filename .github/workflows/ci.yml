@@ -72,7 +72,7 @@ jobs:
           PY
       - name: Seed the fraud graph
         run: python -m graphsleuth seed
-      - name: Reproducible scorecard (expect 11/11)
+      - name: Reproducible scorecard (expect 15/15)
         run: python -m graphsleuth eval
       - name: Company brain (Track 03) tour + agent
         run: |

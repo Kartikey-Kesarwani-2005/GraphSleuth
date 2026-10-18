@@ -151,7 +151,7 @@ the graph and runs the demo — one command from a fresh clone.
 | `python -m graphsleuth demo --target ACC-9003` | run the full scripted investigation, print the evidence trail, optionally `--save report.md` |
 | `python -m graphsleuth pipeline --target ACC-9003` | two agents on one graph: triage → handoff → investigator; add `--verify` for a third adversarial verifier agent; `--save` writes a combined report |
 | `python -m graphsleuth bench --writers 4 --readers 16` | concurrency benchmark: mixed reads/writes with latency percentiles; `--save` writes raw JSON |
-| `python -m graphsleuth eval` | reproducible scorecard: 11 pass/fail checks over the live graph (ring precision, money path, algorithms, memory, tenant isolation, explainability, read-only guard); `--save` writes the JSON |
+| `python -m graphsleuth eval` | reproducible scorecard: 15 pass/fail checks over the live graph (ring precision, money path, algorithms, memory, tenant isolation, explainability, read-only guard) **plus the agent loop itself** (a full investigate-run must reach a trace-backed verdict, its write ids must match the trace, it must stay honest on an empty graph and show the round-budget caveat when cut short); `--save` writes the JSON |
 | `python -m graphsleuth memory` | inspect the agent's memory: learned playbooks, notes and open cases for a tenant; `--kind episodic\|semantic\|procedural` filters |
 | `python -m graphsleuth serve` | interactive web console: streams the investigation live and grows the graph as it runs (`--port`, `--host`) |
 | `python -m graphsleuth company` | **Track 03 — Company Brain:** seed a second graph (people, teams, projects, systems, docs, tickets, chats, decisions) and tour six questions — who knows a system, who owns it, what breaks if it goes down, why a decision was made (traced to source), what we know (docs · tickets · chats), and what's going stale (`--system`, `--decision`, `--save`) |
@@ -300,12 +300,18 @@ python -m graphsleuth eval
 #   [PASS] money path traced          6 hops: ACC-EXT-01 -> … -> ACC-9100
 #   [PASS] native graph algorithms    1 components, 1702 nodes ranked (betweenness), pageRank via falkordb:algo.pageRank
 #   [PASS] memory round-trip / tenant isolation / procedural learning / verified actions / read-only guard
-#   score: 11/11 checks passed (100%)
+#   [PASS] agent loop reaches a grounded verdict     16 rounds, 15 tool calls, counterfactual=yes
+#   [PASS] agent write ids match the trace           4 write ids claimed, 4 write calls, none invented
+#   [PASS] agent stays honest on an empty graph      verdict=none reached, write calls=0
+#   [PASS] agent truncation is visible               truncated=True, budget note in answer=yes
+#   score: 15/15 checks passed (100%)
 ```
 
 The seed is deterministic (`random.Random(42)`), so the numbers are reproducible run to run. The
-isolation and memory checks run in a throwaway tenant (`eval-harness`) that is dropped afterwards,
-so `eval` never leaves residue in your real graphs.
+isolation, memory and agent-loop checks run in throwaway tenants (`eval-harness`, `eval-agent`,
+`eval-empty`) that are dropped afterwards, so `eval` never leaves residue in your real graphs.
+The four `agent …` lines drive `GraphSleuth.ask()` end to end — the same loop a live model runs —
+which is the difference between "the tools work" and "the investigation works".
 
 ---
 

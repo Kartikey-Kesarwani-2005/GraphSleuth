@@ -37,7 +37,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m graphsleuth demo --target ACC-9003 --save demos/out/report.md
 .\.venv\Scripts\python.exe -m graphsleuth pipeline --target ACC-9003 --verify
 .\.venv\Scripts\python.exe -m graphsleuth memory
-.\.venv\Scripts\python.exe -m graphsleuth eval  # 11/11
+.\.venv\Scripts\python.exe -m graphsleuth eval  # 15/15
 
 # Company Brain (Track 03)
 .\.venv\Scripts\python.exe -m graphsleuth company --save demos/COMPANY_BRAIN.md
@@ -54,7 +54,7 @@ python -m graphsleuth.mcp_server  # stdio, 30 tools
 
 ## Verification
 - **Offline tests:** `python tests/test_offline.py` → 36/36 PASS (no DB)
-- **Eval:** `python -m graphsleuth eval` → 11/11 (live FalkorDB)
+- **Eval:** `python -m graphsleuth eval` → 15/15 (live FalkorDB)
 - **MCP:** 30 tools (24 fraud + 6 company), schemas match registry
 - **Isolation:** per-tenant multigraph proven
 - **Concurrency:** bench shows 0 errors
