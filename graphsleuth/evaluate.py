@@ -131,10 +131,11 @@ def check_verified_actions(tenant: str) -> tuple[bool, str]:
     trace = [
         {"tool": "recall", "arguments": {}, "result": {}},
         {"tool": "flag_account", "arguments": {"account_id": "ACC-9003"}, "result": {}},
+        {"tool": "open_case", "arguments": {"title": "x"}, "result": {"error": "no such entity"}},
     ]
     actions = explain.verified_actions(trace)
     ok = len(actions) == 1 and "flag_account" in actions[0]
-    return ok, f"read-only ignored, actions={actions}"
+    return ok, f"reads and failed writes ignored, actions={actions}"
 
 
 def check_readonly_guard(tenant: str) -> tuple[bool, str]:

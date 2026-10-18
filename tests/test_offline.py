@@ -215,6 +215,24 @@ def test_report_markdown_has_sections() -> None:
         assert heading in markdown
 
 
+def test_verified_actions_ignore_failed_calls() -> None:
+    """A write that errored is not an action the agent took.
+
+    The report states "Actions taken (verified from the tool log)", so a rejected
+    call (read-only guard, bad case id, missing entity) must not be listed there as
+    if it had happened.
+    """
+    trace = [
+        {"tool": "entity_search", "arguments": {"query": "ACC-9003"}, "result": {"matches": []}},
+        {"tool": "flag_account", "arguments": {"account_id": "ACC-9003"}, "result": {"flagged": True}},
+        {"tool": "open_case", "arguments": {"title": "x"}, "result": {"error": "no such entity"}},
+        {"tool": "remember", "arguments": {"text": "y"}, "result": {"error": "cypher write blocked"}},
+    ]
+    actions = explain.verified_actions(trace)
+    assert len(actions) == 1
+    assert "flag_account" in actions[0]
+
+
 def test_compose_final_uses_real_results() -> None:
     history = [
         {"tool": "recall", "arguments": {}, "result": {"notes": [{"kind": "episodic", "text": "prior finding"}]}},
