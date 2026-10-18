@@ -176,7 +176,7 @@ Eleven pass/fail lines against the live graph — ring precision, money path, na
 memory round-trip, tenant isolation, procedural learning, verified actions, read-only guard:
 
 ```
-score: 15/15 checks passed (100%)
+score: 16/16 checks passed (100%)
 ```
 
 > "A judged demo shouldn't be 'trust me' — the seed is deterministic, so you can reproduce every

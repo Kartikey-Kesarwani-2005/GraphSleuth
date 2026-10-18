@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml/badge.svg)](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-37%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-39%20passing-brightgreen)
 ![MCP](https://img.shields.io/badge/MCP-30%20tools-8A2BE2)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -186,16 +186,67 @@ graph intact (the data is bind-mounted to `./data/falkordb`).
 |---|---|
 | `python -m graphsleuth status` | check FalkorDB connectivity + node/relationship counts |
 | `python -m graphsleuth seed` | (re)build the synthetic fraud network and baseline memory |
+| `python -m graphsleuth import --accounts a.csv --transactions t.csv` | **bring your own data:** load accounts/transactions (plus optional `--devices`, `--people`, `--merchants`, `--alerts`) from CSV into the same schema, so every tool works on it; `--tenant`, `--reset`, `--allow-missing`, `--dry-run` (see [Bring your own data](#bring-your-own-data-csv-import)) |
 | `python -m graphsleuth demo --target ACC-9003` | run the full scripted investigation, print the evidence trail, optionally `--save report.md` |
 | `python -m graphsleuth pipeline --target ACC-9003` | two agents on one graph: triage → handoff → investigator; add `--verify` for a third adversarial verifier agent; `--save` writes a combined report |
 | `python -m graphsleuth bench --writers 4 --readers 16` | concurrency benchmark: mixed reads/writes with latency percentiles; `--save` writes raw JSON |
-| `python -m graphsleuth eval` | reproducible scorecard: 15 pass/fail checks over the live graph (ring precision, money path, algorithms, memory, tenant isolation, explainability, read-only guard) **plus the agent loop itself** (a full investigate-run must reach a trace-backed verdict, its write ids must match the trace, it must stay honest on an empty graph and show the round-budget caveat when cut short); `--save` writes the JSON |
+| `python -m graphsleuth eval` | reproducible scorecard: 16 pass/fail checks over the live graph (ring precision, money path, algorithms, memory, tenant isolation, explainability, read-only guard), CSV ingestion **plus the agent loop itself** (a full investigate-run must reach a trace-backed verdict, its write ids must match the trace, it must stay honest on an empty graph and show the round-budget caveat when cut short); `--save` writes the JSON |
 | `python -m graphsleuth tools` | print the reference for all 30 tools (purpose, arguments, read/write) — generated from the specs, so it cannot drift; `--write` refreshes [`docs/TOOLS.md`](docs/TOOLS.md) |
 | `python -m graphsleuth memory` | inspect the agent's memory: learned playbooks, notes and open cases for a tenant; `--kind episodic\|semantic\|procedural` filters |
 | `python -m graphsleuth serve` | interactive web console: streams the investigation live and grows the graph as it runs (`--port`, `--host`) |
 | `python -m graphsleuth company` | **Track 03 — Company Brain:** seed a second graph (people, teams, projects, systems, docs, tickets, chats, decisions) and tour six questions — who knows a system, who owns it, what breaks if it goes down, why a decision was made (traced to source), what we know (docs · tickets · chats), and what's going stale (`--system`, `--decision`, `--save`) |
 | `python -m graphsleuth company-chat "who knows SYS-ledger-db?"` | **Track 03 as an agent:** ask an org question and the LLM picks the company tools itself, answering with node ids as citations (`--offline` runs the scripted brain, `--keep` reuses the graph, `--save` writes the answer) |
 | `python -m graphsleuth chat` | interactive session; drives a live model when a key is set (Groq/OpenAI-compatible), else the offline fallback |
+
+### Bring your own data (CSV import)
+
+The demo graph is synthetic, but the investigation is not bound to it. `import` loads your own
+CSVs into the **same schema** `seed` builds — `Account`, `Person`, `Device`, `Merchant`,
+`Transaction`, `Alert` nodes and `OWNS` / `USED_DEVICE` / `ORIGINATED` / `DESTINED` / `PAID` /
+`FLAGGED_BY` edges — so every tool (and the console) works on it unchanged.
+
+```bash
+# accounts.csv:      id,type,status,risk_score,opened_at
+# transactions.csv:  id,from,to,amount,timestamp,channel        (aliases accepted: tx_id, from_account, ts, …)
+# devices.csv:       device_id,account,fingerprint              (one device on many accounts = the shared-device signal)
+# alerts.csv:        id,account,rule,severity,created_at
+# people.csv:        id,name,country,kyc,created_at,account     (optional)
+# merchants.csv:     id,name,category                           (optional)
+
+python -m graphsleuth import --accounts accounts.csv --transactions transactions.csv \
+    --devices devices.csv --alerts alerts.csv --tenant acme --reset
+# → Import — tenant 'acme' (graph 'graphsleuth:acme')
+#     accounts 4 row(s) … graph: 0 → 9 nodes (+9), 0 → 9 relationships (+9)
+```
+
+Then investigate the imported network by driving the agent itself:
+
+```bash
+python -m graphsleuth chat --tenant acme          # live model picks the tools from your ids
+python -m graphsleuth serve --port 8765           # or ask in the console (tenant field: acme)
+```
+
+The scripted `demo` and `pipeline` scripts are written for the seed network (their hardcoded case
+narrative names the demo's own accounts and devices), so they are not the right entry point for
+your data — the live model, and the console, are. Verified on imported CSVs: the agent resolves
+your ids, finds the shared device, runs the counterfactual on it, opens a case, and reports
+`high` confidence only because the stress test really ran.
+
+Rules that keep an import honest:
+
+* **It validates before it writes.** Missing columns, duplicate ids, non-numeric amounts and
+  non-ISO-8601 timestamps are refused with the file and the line number.
+* **A row pointing at an unknown account is an error, not a silent no-op** — the
+  `MATCH (a:Account {id: …})` would otherwise write nothing and leave a partial import looking
+  complete. Add the account, or pass `--allow-missing` to skip those rows (and report how many).
+* **Re-importing is a sync, not an append.** Account/Person/Merchant properties are `SET`;
+  `Transaction`, `Device` and `Alert` nodes are replaced by id, so fixing an endpoint in the CSV
+  and importing again cannot leave a stale money path or a moved device behind.
+* **`--dry-run` needs no FalkorDB at all** — it parses, validates and prints what would happen
+  (cross-references are then checked against the files only, and it says so).
+
+`eval` covers this end to end: one of its checks writes four CSVs, imports them, re-imports them
+(nothing may change) and then drives the real handlers against the result.
 
 ### LLM modes
 
@@ -343,14 +394,18 @@ python -m graphsleuth eval
 #   [PASS] agent write ids match the trace           4 write ids claimed, 4 write calls, none invented
 #   [PASS] agent stays honest on an empty graph      verdict=none reached, write calls=0
 #   [PASS] agent truncation is visible               truncated=True, budget note in answer=yes
-#   score: 15/15 checks passed (100%)
+#   [PASS] CSV import: files → graph → tools        9 nodes / 9 relationships from 4 CSVs, ring=yes, counterfactual found=True
+#   score: 16/16 checks passed (100%)
 ```
 
 The seed is deterministic (`random.Random(42)`), so the numbers are reproducible run to run. The
-isolation, memory and agent-loop checks run in throwaway tenants (`eval-harness`, `eval-agent`,
-`eval-empty`) that are dropped afterwards, so `eval` never leaves residue in your real graphs.
+isolation, memory, agent-loop and import checks run in throwaway tenants (`eval-harness`,
+`eval-agent`, `eval-empty`, `eval-import`) that are dropped afterwards, so `eval` never leaves
+residue in your real graphs.
 The four `agent …` lines drive `GraphSleuth.ask()` end to end — the same loop a live model runs —
-which is the difference between "the tools work" and "the investigation works".
+which is the difference between "the tools work" and "the investigation works". The last line
+writes four CSVs, imports them, re-imports them (nothing may change) and then drives the real
+handlers against the result.
 
 ---
 
@@ -654,7 +709,7 @@ Selected output (copied from the report):
   own conclusion — proof that state lives in the graph, not the process.
 * **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 30 tools and
   gets live graph data back (`tools: 30`; live `entity_search` + `detect_suspicious_cluster` calls).
-* **Tests:** `tests/test_offline.py` → 37/37 pass (no database required; includes an MCP/agent
+* **Tests:** `tests/test_offline.py` → 39/39 pass (no database required; includes an MCP/agent
   toolbelt parity check and company-brain tests); `compileall` clean. CI runs the suite and a real
   FalkorDB end-to-end job on every push.
 
@@ -684,6 +739,7 @@ GraphSleuth/
 │  ├─ config.py        # env config (FalkorDB + LLM)
 │  ├─ db.py            # the only module that talks to FalkorDB (multigraph tenancy)
 │  ├─ seed.py          # synthetic fraud network + baseline memory
+│  ├─ ingest.py        # CSV import: your accounts/transactions/devices → the same schema
 │  ├─ company.py       # Track 03: company-brain graph, tour + agent (`company`, `company-chat`)
 │  ├─ tools.py         # the 30 graph tools (24 fraud reads/algorithms/writes + 6 company-brain)
 │  ├─ memory.py        # episodic / semantic / procedural memory
@@ -694,7 +750,7 @@ GraphSleuth/
 │  ├─ bench.py         # concurrency benchmark
 │  ├─ explain.py       # evidence trail + Mermaid path rendering
 │  ├─ tool_docs.py     # generates docs/TOOLS.md from the tool specs
-│  ├─ cli.py           # status / seed / demo / pipeline / bench / eval / tools / memory / company / company-chat / serve / chat
+│  ├─ cli.py           # status / seed / import / demo / pipeline / bench / eval / tools / memory / company / serve / chat
 │  ├─ server.py        # zero-dependency web console (`serve`): live stream + growing graph
 │  ├─ web/             # the console's single-page app (plain HTML/CSS/JS, no CDN)
 │  └─ mcp_server.py    # the same 30 tools over MCP (stdio)

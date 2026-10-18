@@ -38,6 +38,13 @@ If CLI crashes on LLM output with `UnicodeEncodeError`:
   now reports "**Verdict** — none reached" with what each tool returned, and it
   writes no case, flag or playbook: an empty graph is not a clean account.
 
+## CSV import says "1 row(s) reference accounts that are in neither the accounts file nor the graph"
+- That is deliberate: `MATCH (a:Account {id: …})` writes **nothing** when the account is
+  missing, so an unchecked import would look complete while silently dropping money paths.
+- Fix the `from`/`to` ids (or add the missing accounts to `--accounts`), or pass
+  `--allow-missing` to skip those rows — the report then says how many were skipped.
+- `--dry-run` validates without writing and without needing FalkorDB at all.
+
 ## LLM quota/fallback
 - With `GROQ_API_KEY` set, it tries `openai/gpt-oss-120b` → `openai/gpt-oss-20b` → `qwen/qwen3.8-27b` automatically.
 - Daily cap on 120b? Fallback kicks in (seen in logs).
@@ -49,8 +56,8 @@ If CLI crashes on LLM output with `UnicodeEncodeError`:
 - Tenant via `GRAPHSLEUTH_TENANT` env var.
 
 ## Tests
-- Offline: `python tests/test_offline.py` → 37/37 PASS (no DB needed)
-- Eval: `python -m graphsleuth eval` → 15/15 (needs FalkorDB + seeded graph)
+- Offline: `python tests/test_offline.py` → 39/39 PASS (no DB needed)
+- Eval: `python -m graphsleuth eval` → 16/16 (needs FalkorDB + seeded graph)
 - Seed: `python -m graphsleuth seed`
 
 ## Multitenancy

@@ -316,6 +316,134 @@ def test_tools_doc_is_current() -> None:
     assert DOC_PATH.read_text(encoding="utf-8") == render_tools_markdown()
 
 
+def _csv(directory: Path, name: str, text: str) -> str:
+    path = directory / name
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_csv_import_parses_and_validates() -> None:
+    """Ingestion reads friendly headers and refuses anything it cannot trust.
+
+    Every refusal names the file and the line, because a silently dropped row would
+    make a partially imported file look complete.
+    """
+    import tempfile
+
+    from graphsleuth.ingest import IngestError, load_files
+
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw)
+        accounts = _csv(
+            tmp,
+            "accounts.csv",
+            "account_id,account_type,risk\nACC-1,current,0.4\nACC-2,savings,0.9\n",
+        )
+        transactions = _csv(
+            tmp,
+            "tx.csv",
+            "tx_id,from_account,to_account,amount,ts\nTX-1,ACC-1,ACC-2,5000,2026-02-01T09:00:00Z\n",
+        )
+        devices = _csv(
+            tmp,
+            "devices.csv",
+            "device_id,account,fingerprint\nDEV-1,ACC-1,fp-aa\nDEV-1,ACC-2,fp-aa\n",
+        )
+        bundle = load_files(accounts, transactions, devices_path=devices)
+        assert [account["id"] for account in bundle.accounts] == ["ACC-1", "ACC-2"]
+        assert bundle.accounts[1]["type"] == "savings" and bundle.accounts[1]["risk_score"] == 0.9
+        assert bundle.transactions[0]["from"] == "ACC-1" and bundle.transactions[0]["amount"] == 5000.0
+        assert bundle.transactions[0]["ts"].startswith("2026-02-01T09:00:00")
+        # one device on two accounts is the shared-device signal, not a duplicate id
+        assert len(bundle.devices) == 2
+        assert {device["account"] for device in bundle.devices} == {"ACC-1", "ACC-2"}
+
+        def refuses(expect: str, accounts_path: str, transactions_path: str, **extra: str) -> None:
+            try:
+                load_files(accounts_path, transactions_path, **extra)
+            except IngestError as exc:
+                assert expect in str(exc), f"expected '{expect}' in: {exc}"
+            else:
+                raise AssertionError(f"accepted a file that should have failed: {expect}")
+
+        refuses("missing required column", _csv(tmp, "no_id.csv", "type\ncurrent\n"), transactions)
+        refuses("duplicate id", _csv(tmp, "dup.csv", "id\nACC-1\nACC-1\n"), transactions)
+        refuses(
+            "is not a number",
+            accounts,
+            _csv(tmp, "bad_amount.csv", "id,from,to,amount\nTX-2,ACC-1,ACC-2,lots\n"),
+        )
+        refuses(
+            "is not ISO-8601",
+            accounts,
+            _csv(tmp, "bad_time.csv", "id,from,to,amount,timestamp\nTX-2,ACC-1,ACC-2,5,yesterday\n"),
+        )
+        refuses(
+            "needs 'from' and 'to'",
+            accounts,
+            _csv(tmp, "no_endpoints.csv", "id,from,amount\nTX-2,ACC-1,5\n"),
+        )
+
+
+def test_csv_import_refuses_unknown_accounts() -> None:
+    """A row pointing at an account that is nowhere is an error, not a silent no-op.
+
+    `MATCH (a:Account {id: ...})` writes nothing when the account is missing, so the
+    rows are checked first: refuse the import, or skip them only if asked to.
+    """
+    from graphsleuth.ingest import Bundle, IngestError, filter_unknown_references
+
+    bundle = Bundle(
+        accounts=[
+            {
+                "id": "ACC-1",
+                "type": "current",
+                "status": "active",
+                "risk_score": 0.1,
+                "opened_at": "2026-01-01T00:00:00+00:00",
+            }
+        ],
+        people=[
+            {
+                "id": "P-1",
+                "name": "A",
+                "country": "",
+                "kyc": True,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "account": "ACC-9",
+            }
+        ],
+        devices=[{"id": "DEV-1", "account": "ACC-9", "fingerprint": "fp"}],
+        transactions=[
+            {
+                "id": "TX-1",
+                "from": "ACC-1",
+                "to": "ACC-9",
+                "merchant": "",
+                "amount": 10.0,
+                "ts": "2026-02-01T09:00:00+00:00",
+                "channel": "upi",
+                "currency": "INR",
+                "category": "",
+            }
+        ],
+    )
+    try:
+        filter_unknown_references(bundle, {"ACC-1"}, allow_missing=False)
+    except IngestError as exc:
+        assert "unknown account 'ACC-9'" in str(exc)
+    else:
+        raise AssertionError("an unknown account reference must refuse the import")
+
+    skipped = filter_unknown_references(bundle, {"ACC-1"}, allow_missing=True)
+    assert skipped.dropped and "skipped" in skipped.messages[0]
+    assert not skipped.bundle.people and not skipped.bundle.devices and not skipped.bundle.transactions
+
+    # ACC-9 is already in the graph (not in the file) — that reference is fine.
+    kept = filter_unknown_references(bundle, {"ACC-1", "ACC-9"}, allow_missing=False)
+    assert not kept.dropped and len(kept.bundle.transactions) == 1 and len(kept.bundle.devices) == 1
+
+
 def test_compose_final_uses_real_results() -> None:
     history = [
         {"tool": "recall", "arguments": {}, "result": {"notes": [{"kind": "episodic", "text": "prior finding"}]}},

@@ -9,14 +9,14 @@ pass/fail table with the evidence for each line. The seed graph is deterministic
 
 Checks span the whole brief: ring detection and precision, money-path tracing,
 native graph algorithms, episodic/semantic/procedural memory round-trips, tenant
-isolation, the explainability layer (verified actions), the read-only guard — and
-the agent loop itself: a full investigate-run that must reach a trace-backed
-verdict, write ids that match the trace, stay honest on an empty graph, and show
-the round-budget caveat when it is cut short.
+isolation, the explainability layer (verified actions), the read-only guard, CSV
+ingestion — and the agent loop itself: a full investigate-run that must reach a
+trace-backed verdict, write ids that match the trace, stay honest on an empty graph,
+and show the round-budget caveat when it is cut short.
 
-The isolation, memory and agent-loop checks run in throwaway tenants
-(`eval-harness`, `eval-agent`, `eval-empty`) that are dropped afterwards, so
-`eval` never leaves residue in your real graphs.
+The isolation, memory, agent-loop and import checks run in throwaway tenants
+(`eval-harness`, `eval-agent`, `eval-empty`, `eval-import`) that are dropped
+afterwards, so `eval` never leaves residue in your real graphs.
 """
 
 from __future__ import annotations
@@ -268,6 +268,101 @@ def check_agent_truncation_visible(tenant: str) -> tuple[bool, str]:
     )
 
 
+IMPORT_TENANT = "eval-import"  # throwaway graph the CSV-import check builds from files
+
+_IMPORT_FILES = {
+    "accounts.csv": """id,type,status,risk_score,opened_at
+ACC-IMP-1,current,active,0.72,2026-01-05T10:00:00+00:00
+ACC-IMP-2,savings,active,0.65,2026-01-06T10:00:00+00:00
+ACC-IMP-C,current,active,0.55,2026-01-07T10:00:00+00:00
+ACC-IMP-D,wallet,active,0.20,2026-01-08T10:00:00+00:00
+""",
+    "transactions.csv": """tx_id,from_account,to_account,amount,ts,channel
+TX-IMP-1,ACC-IMP-1,ACC-IMP-C,45000,2026-02-01T09:00:00+00:00,upi
+TX-IMP-2,ACC-IMP-2,ACC-IMP-C,51000,2026-02-01T09:30:00+00:00,upi
+TX-IMP-3,ACC-IMP-C,ACC-IMP-D,90000,2026-02-01T10:00:00+00:00,neft
+""",
+    "devices.csv": """device_id,account,fingerprint
+DEV-IMP-1,ACC-IMP-1,fp-shared
+DEV-IMP-1,ACC-IMP-2,fp-shared
+""",
+    "alerts.csv": """alert_id,account,rule_id,severity,created_at
+AL-IMP-1,ACC-IMP-1,velocity,high,2026-02-01T11:00:00+00:00
+""",
+}
+
+
+def check_csv_import_roundtrip(tenant: str) -> tuple[bool, str]:
+    """Bringing your own data in: CSV → graph → the same tools see it.
+
+    Writes four small CSVs (with alias headers, to exercise the mapping), imports
+    them into a throwaway tenant, then drives the real handlers against the result —
+    including a second import that must change nothing.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from . import ingest
+
+    with tempfile.TemporaryDirectory() as raw:
+        tmp = Path(raw)
+        for name, text in _IMPORT_FILES.items():
+            (tmp / name).write_text(text, encoding="utf-8")
+        paths = {name.split(".")[0]: str(tmp / name) for name in _IMPORT_FILES}
+        report = ingest.import_csv(
+            paths["accounts"],
+            paths["transactions"],
+            devices_path=paths["devices"],
+            alerts_path=paths["alerts"],
+            tenant=IMPORT_TENANT,
+            reset=True,
+        )
+        again = ingest.import_csv(
+            paths["accounts"],
+            paths["transactions"],
+            devices_path=paths["devices"],
+            alerts_path=paths["alerts"],
+            tenant=IMPORT_TENANT,
+        )
+        stable = (
+            again["before"]["nodes"] == again["after"]["nodes"]
+            and again["before"]["relationships"] == again["after"]["relationships"]
+        )
+
+    with db.tenant_scope(IMPORT_TENANT):
+        found = HANDLERS["entity_search"](query="ACC-IMP-1")
+        links = HANDLERS["find_shared_links"](account_id="ACC-IMP-1")
+        flow = HANDLERS["trace_money_flow"](account_id="ACC-IMP-1", depth=3)
+        clusters = HANDLERS["detect_suspicious_cluster"](min_signals=2)
+        path = HANDLERS["shortest_connection"](id_a="ACC-IMP-1", id_b="ACC-IMP-D", max_depth=6)
+        counter = HANDLERS["what_if_removed"](
+            entity_id="DEV-IMP-1", from_id="ACC-IMP-1", to_id="ACC-IMP-D", max_depth=6
+        )
+
+    matches = {match["id"] for match in found.get("matches") or []}
+    shared = [link for link in links.get("links") or [] if "DEV-IMP-1" in (link.get("shared_devices") or [])]
+    reached = set((flow.get("outgoing") or {}).get("reached") or [])
+    ring = [cluster for cluster in clusters.get("clusters") or [] if cluster.get("size", 0) >= 3]
+    hops = len(path.get("path") or [])
+    ok = (
+        report["after"]["nodes"] == 9
+        and report["after"]["relationships"] == 9
+        and stable
+        and "ACC-IMP-1" in matches
+        and shared
+        and {"ACC-IMP-C", "ACC-IMP-D"} <= reached
+        and ring
+        and hops >= 5
+        and counter.get("found") is True
+    )
+    return ok, (
+        f"{report['after']['nodes']} nodes / {report['after']['relationships']} relationships from 4 CSVs, "
+        f"re-import stable={stable}, shared device={'yes' if shared else 'no'}, "
+        f"money reached={sorted(reached)}, ring={'yes' if ring else 'no'}, "
+        f"path hops={hops - 1}, counterfactual found={counter.get('found')}"
+    )
+
+
 CHECKS: list[Check] = [
     ("graph is seeded", check_graph_present),
     ("mule ring detected", check_ring_detected),
@@ -284,6 +379,7 @@ CHECKS: list[Check] = [
     ("agent write ids match the trace", check_agent_actions_match_trace),
     ("agent stays honest on an empty graph", check_agent_empty_graph_honest),
     ("agent truncation is visible", check_agent_truncation_visible),
+    ("CSV import: files → graph → tools", check_csv_import_roundtrip),
 ]
 
 
@@ -310,7 +406,7 @@ def run(tenant: str = memory.DEFAULT_TENANT) -> dict:
             # run against the harness.
             db.set_tenant(tenant)
         results.append({"check": name, "passed": bool(passed), "detail": detail})
-    for throwaway in (HARNESS_TENANT, AGENT_TENANT, EMPTY_TENANT):
+    for throwaway in (HARNESS_TENANT, AGENT_TENANT, EMPTY_TENANT, IMPORT_TENANT):
         try:
             db.drop_tenant(throwaway)
         except Exception:  # noqa: BLE001

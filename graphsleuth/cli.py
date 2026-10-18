@@ -25,6 +25,7 @@ from . import db, explain, memory, seed as seed_module
 from .agent import GraphSleuth, build_demo_brain
 from .agents import pipeline_markdown, run_pipeline
 from .config import config
+from .ingest import DEFAULT_COLUMNS as INGEST_COLUMNS
 
 
 def _db_down(exc: Exception) -> int:
@@ -301,6 +302,31 @@ def cmd_chat(args: argparse.Namespace) -> int:
         print("\n" + result["answer"] + "\n")
 
 
+def cmd_import(args: argparse.Namespace) -> int:
+    from . import ingest
+
+    try:
+        report = ingest.import_csv(
+            args.accounts,
+            args.transactions,
+            devices_path=args.devices,
+            people_path=args.people,
+            merchants_path=args.merchants,
+            alerts_path=args.alerts,
+            tenant=args.tenant,
+            reset=args.reset,
+            allow_missing=args.allow_missing,
+            dry_run=args.dry_run,
+        )
+    except ingest.IngestError as exc:
+        print(f"import failed: {exc}")
+        return 2
+    print(ingest.render_report(report))
+    if not report["dry_run"]:
+        print("\nThe tools work on imported data:  python -m graphsleuth status / demo --target <account> / serve")
+    return 0
+
+
 def cmd_tools(args: argparse.Namespace) -> int:
     from .tool_docs import DOC_PATH, render_tools_markdown
 
@@ -324,6 +350,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_seed.add_argument("--keep", action="store_true", help="append instead of wiping first")
     p_seed.add_argument("--tenant", default=memory.DEFAULT_TENANT, help="seed this tenant's graph")
     p_seed.set_defaults(func=cmd_seed)
+
+    p_import = sub.add_parser("import", help="load your own accounts/transactions/devices from CSV")
+    p_import.add_argument("--accounts", required=True, help=f"CSV: {INGEST_COLUMNS['accounts']}")
+    p_import.add_argument("--transactions", required=True, help=f"CSV: {INGEST_COLUMNS['transactions']}")
+    p_import.add_argument("--devices", default="", help=f"CSV: {INGEST_COLUMNS['devices']}")
+    p_import.add_argument("--people", default="", help=f"CSV: {INGEST_COLUMNS['people']}")
+    p_import.add_argument("--merchants", default="", help=f"CSV: {INGEST_COLUMNS['merchants']}")
+    p_import.add_argument("--alerts", default="", help=f"CSV: {INGEST_COLUMNS['alerts']}")
+    p_import.add_argument("--tenant", default=memory.DEFAULT_TENANT, help="import into this tenant's graph")
+    p_import.add_argument("--reset", action="store_true", help="wipe the tenant's graph first")
+    p_import.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="skip rows referencing unknown accounts instead of refusing the import",
+    )
+    p_import.add_argument("--dry-run", action="store_true", help="parse and validate only (no database needed)")
+    p_import.set_defaults(func=cmd_import)
 
     p_demo = sub.add_parser("demo", help="run the end-to-end investigation (live LLM if configured)")
     p_demo.add_argument("--target", default="ACC-9003", help="account or entity id to investigate")
@@ -434,7 +477,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        if args.command != "status":
+        # A dry run only reads CSV files, so it must work with the database down.
+        offline_ok = args.command == "import" and getattr(args, "dry_run", False)
+        if args.command != "status" and not offline_ok:
             abort = _preflight(args)
             if abort is not None:
                 return abort

@@ -1731,7 +1731,7 @@ def list_alerts(status: str = "", severity: str = "", limit: int = 10) -> dict:
         ORDER BY al.created_at DESC
         LIMIT $limit
         RETURN [al.id, al.severity, coalesce(al.status, ''), a.id,
-                coalesce(al.reason, ''), al.created_at] AS row
+                coalesce(al.reason, al.rule, ''), al.created_at] AS row
         """,
         {"status": (status or "").strip().lower(), "sev": (severity or "").strip().lower(), "limit": max(1, int(limit))},
     )
