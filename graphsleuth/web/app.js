@@ -547,6 +547,15 @@ function renderVerdict(ev) {
   v.scrollIntoView({ behavior: "smooth", block: "nearest" });
   lastVerdict = ev;
   $("exports").classList.remove("hidden");
+  if (ev.answer && ev.answer.includes("**Confidence**")) {
+    const lines = ev.answer.split(/\r?\n/);
+    for (const l of lines) {
+      if (l.includes("**Confidence**")) {
+        v.insertAdjacentHTML("afterbegin", `<div class="pill" style="margin:0 0 10px">${inline(l)}</div>`);
+        break;
+      }
+    }
+  }
 }
 
 /* ------------------------------------------------------------------ *
