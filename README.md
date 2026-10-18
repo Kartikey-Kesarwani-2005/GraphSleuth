@@ -6,6 +6,8 @@
 ![MCP](https://img.shields.io/badge/MCP-30%20tools-8A2BE2)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+> **Demo Video:** [Add Loom/YouTube unlisted link here](https://www.loom.com/share/your-demo-link) *(replace with actual video link)*
+
 **A fraud investigation agent whose context layer is FalkorDB.**
 
 GraphSleuth doesn't look up records — it follows relationships. Ask it about one suspicious
@@ -42,7 +44,7 @@ and it can prove every hop with the tool call that produced it.
   question ───▶ │  GraphSleuth agent loop                        │
                 │  memory briefing ─▶ LLM ─▶ tool call ─▶ result │
                 └───────────────────────┬────────────────────────┘
-                                        │ 30 tools
+                                        │ 30 tools (24 fraud + 6 company)
                     ┌───────────────────┴────────────────────┐
                     ▼                                        ▼
         read tools (reason over the graph, 18)  write tools (act on the graph, 6)
@@ -559,8 +561,8 @@ escalates, it calls `create_handoff(to_role='investigator', context=..., entity_
 writes a `Handoff` node into the shared graph — and `remember`s what it did. The **investigator**
 starts with `list_handoffs` / `accept_handoff` and continues from graph state alone.
 
-No state is passed through the caller: the two agents are separate sessions and the graph is the
-only thing they share.
+Three agents run against the same graph: **Triage** → **Investigator** → **Verifier**. No state passes through the caller: handoff and the open case live only in FalkorDB. The verifier is adversarial — it
+re-proves the claim before adding its own notes.
 
 ### Three agents: the adversarial verifier (`--verify`)
 
@@ -702,16 +704,17 @@ Selected output (copied from the report):
   clusters were filtered out as noise.
 * **Money path** (money-only, no case/alert detours):
   `ACC-EXT-01 -[ORIGINATED]-> TX-9000 -[DESTINED]-> ACC-9001 -[ORIGINATED]-> TX-9001 -[DESTINED]-> ACC-9002 -[ORIGINATED]-> TX-9008 -[DESTINED]-> ACC-9100`
-* **Actions on the graph:** opened `CASE-0002` involving the 8 unique entities, added a case note,
+* **Actions on the graph:** opened the case involving the entities, added a case note,
   flagged `ACC-9003` as `high` (`under_review`) and wrote an episodic memory note. The report's
   **Actions taken (verified from the tool log)** section lists exactly these — from the trace.
 * **Cross-session memory:** running `demo` a second time, step 1's `recall` returns the first run's
   own conclusion — proof that state lives in the graph, not the process.
 * **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 30 tools and
   gets live graph data back (`tools: 30`; live `entity_search` + `detect_suspicious_cluster` calls).
-* **Tests:** `tests/test_offline.py` → 41/41 pass (no database required; includes an MCP/agent
-  toolbelt parity check and company-brain tests); `compileall` clean. CI runs the suite and a real
-  FalkorDB end-to-end job on every push.
+* **Tests:** `tests/test_offline.py` → **41/41 pass** (no database required; includes MCP/agent
+  parity, web console wiring, timeline/pattern, stress-test, proof-pack, counterfactual
+  read-only guard, agent-loop eval checks and CSV import tests); `compileall` clean. CI runs the
+  suite and a real FalkorDB end-to-end job on every push.
 
 > Run ids (`AL-…`, `NOTE-…`, `MEM-…`, `HANDOFF-…`) are generated per run, so they differ between
 > runs; the committed report files are the source of truth for any specific id.
@@ -770,6 +773,12 @@ GraphSleuth/
 Everything the project needs — code, config, tests, and the graph's on-disk data — lives inside
 this one folder. The only machine-wide pieces are Docker Desktop itself and the pulled
 `falkordb/falkordb` image.
+
+---
+
+## AI Assistance Disclosure
+
+This project was developed with assistance from AI coding tools (OpenCode) for scaffolding, cleanup, deduplication, and UI polish. All graph schema design, Cypher queries, agent/tool logic, counterfactuals, tests, and verification were authored, reviewed, and validated by the team (**NexAI / codeNZ4NTP**).
 
 ---
 
