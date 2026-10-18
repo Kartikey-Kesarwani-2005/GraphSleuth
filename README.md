@@ -42,7 +42,7 @@ and it can prove every hop with the tool call that produced it.
   question ───▶ │  GraphSleuth agent loop                        │
                 │  memory briefing ─▶ LLM ─▶ tool call ─▶ result │
                 └───────────────────────┬────────────────────────┘
-                                        │ 30 tools
+                                        │ 30 tools (24 fraud + 6 company)
                     ┌───────────────────┴────────────────────┐
                     ▼                                        ▼
         read tools (reason over the graph)      write tools (act on the graph)
@@ -443,8 +443,8 @@ escalates, it calls `create_handoff(to_role='investigator', context=..., entity_
 writes a `Handoff` node into the shared graph — and `remember`s what it did. The **investigator**
 starts with `list_handoffs` / `accept_handoff` and continues from graph state alone.
 
-No state is passed through the caller: the two agents are separate sessions and the graph is the
-only thing they share.
+Three agents run against the same graph: **Triage** → **Investigator** → **Verifier**. No state passes through the caller: handoff and the open case live only in FalkorDB. The verifier is adversarial — it
+re-proves the claim before adding its own notes.
 
 ### Three agents: the adversarial verifier (`--verify`)
 
@@ -584,16 +584,19 @@ Selected output (copied from the report):
   clusters were filtered out as noise.
 * **Money path** (money-only, no case/alert detours):
   `ACC-EXT-01 -[ORIGINATED]-> TX-9000 -[DESTINED]-> ACC-9001 -[ORIGINATED]-> TX-9001 -[DESTINED]-> ACC-9002 -[ORIGINATED]-> TX-9008 -[DESTINED]-> ACC-9100`
-* **Actions on the graph:** opened `CASE-0002` involving the 8 unique entities, added a case note,
+* **Actions on the graph:** opened the case involving the entities, added a case note,
   flagged `ACC-9003` as `high` (`under_review`) and wrote an episodic memory note. The report's
   **Actions taken (verified from the tool log)** section lists exactly these — from the trace.
 * **Cross-session memory:** running `demo` a second time, step 1's `recall` returns the first run's
   own conclusion — proof that state lives in the graph, not the process.
 * **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 30 tools and
-  gets live graph data back (`tools: 26`; live `entity_search` + `detect_suspicious_cluster` calls).
-* **Tests:** `tests/test_offline.py` → 27/27 pass (no database required; includes an MCP/agent
-  toolbelt parity check and company-brain tests); `compileall` clean. CI runs the suite and a real
-  FalkorDB end-to-end job on every push.
+  gets live graph data back (live `entity_search` + `detect_suspicious_cluster` calls).
+* **Tests:** `tests/test_offline.py` → **32/32** pass (no database required; includes MCP/agent
+  parity, web console wiring, timeline/pattern, stress-test, proof-pack and counterfactual
+  read-only guard); `compileall` clean. CI runs the suite and a real FalkorDB end-to-end job.
+
+> Run ids (`AL-…`, `NOTE-…`, `MEM-…`, `HANDOFF-…`) are generated per run, so they differ between
+> runs; the committed report files are the source of truth for any specific id.
 
 > Run ids (`AL-…`, `NOTE-…`, `MEM-…`, `HANDOFF-…`) are generated per run, so they differ between
 > runs; the committed report files are the source of truth for any specific id.

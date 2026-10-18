@@ -27,12 +27,12 @@ If CLI crashes on LLM output with `UnicodeEncodeError`:
 
 ## MCP stdio
 - Run: `python -m graphsleuth.mcp_server` (reads from stdin/stdout)
-- 30 tools total (24 fraud + 6 company). Verify with any MCP client.
+- **30 tools** total (24 fraud + 6 company). Verify with any MCP client.
 - Tenant via `GRAPHSLEUTH_TENANT` env var.
 
 ## Tests
-- Offline: `python tests/test_offline.py` → 27/27 PASS (no DB needed)
-- Eval: `python -m graphsleuth eval` → 11/11 (needs FalkorDB + seeded graph)
+- Offline: `python tests/test_offline.py` → **32/32** (no DB needed)
+- Eval: `python -m graphsleuth eval` → **11/11** (needs FalkorDB + seeded graph)
 - Seed: `python -m graphsleuth seed`
 
 ## Multitenancy
