@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml/badge.svg)](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-36%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-37%20passing-brightgreen)
 ![MCP](https://img.shields.io/badge/MCP-30%20tools-8A2BE2)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -71,6 +71,9 @@ and it can prove every hop with the tool call that produced it.
 
 The agent has no private database. Everything it knows — the fraud network, what previous
 sessions concluded, the playbook it follows — is nodes and edges in one FalkorDB graph.
+
+Every tool, with its arguments and read/write flag, is in **[`docs/TOOLS.md`](docs/TOOLS.md)** —
+generated from the specs, so it cannot drift (`python -m graphsleuth tools`).
 
 ### What the graph has to do (and where it does it)
 
@@ -187,6 +190,7 @@ graph intact (the data is bind-mounted to `./data/falkordb`).
 | `python -m graphsleuth pipeline --target ACC-9003` | two agents on one graph: triage → handoff → investigator; add `--verify` for a third adversarial verifier agent; `--save` writes a combined report |
 | `python -m graphsleuth bench --writers 4 --readers 16` | concurrency benchmark: mixed reads/writes with latency percentiles; `--save` writes raw JSON |
 | `python -m graphsleuth eval` | reproducible scorecard: 15 pass/fail checks over the live graph (ring precision, money path, algorithms, memory, tenant isolation, explainability, read-only guard) **plus the agent loop itself** (a full investigate-run must reach a trace-backed verdict, its write ids must match the trace, it must stay honest on an empty graph and show the round-budget caveat when cut short); `--save` writes the JSON |
+| `python -m graphsleuth tools` | print the reference for all 30 tools (purpose, arguments, read/write) — generated from the specs, so it cannot drift; `--write` refreshes [`docs/TOOLS.md`](docs/TOOLS.md) |
 | `python -m graphsleuth memory` | inspect the agent's memory: learned playbooks, notes and open cases for a tenant; `--kind episodic\|semantic\|procedural` filters |
 | `python -m graphsleuth serve` | interactive web console: streams the investigation live and grows the graph as it runs (`--port`, `--host`) |
 | `python -m graphsleuth company` | **Track 03 — Company Brain:** seed a second graph (people, teams, projects, systems, docs, tickets, chats, decisions) and tour six questions — who knows a system, who owns it, what breaks if it goes down, why a decision was made (traced to source), what we know (docs · tickets · chats), and what's going stale (`--system`, `--decision`, `--save`) |
@@ -650,7 +654,7 @@ Selected output (copied from the report):
   own conclusion — proof that state lives in the graph, not the process.
 * **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 30 tools and
   gets live graph data back (`tools: 30`; live `entity_search` + `detect_suspicious_cluster` calls).
-* **Tests:** `tests/test_offline.py` → 36/36 pass (no database required; includes an MCP/agent
+* **Tests:** `tests/test_offline.py` → 37/37 pass (no database required; includes an MCP/agent
   toolbelt parity check and company-brain tests); `compileall` clean. CI runs the suite and a real
   FalkorDB end-to-end job on every push.
 
@@ -689,13 +693,14 @@ GraphSleuth/
 │  ├─ evaluate.py      # reproducible evaluation scorecard (`eval`)
 │  ├─ bench.py         # concurrency benchmark
 │  ├─ explain.py       # evidence trail + Mermaid path rendering
-│  ├─ cli.py           # status / seed / demo / pipeline / bench / eval / memory / company / company-chat / serve / chat
+│  ├─ tool_docs.py     # generates docs/TOOLS.md from the tool specs
+│  ├─ cli.py           # status / seed / demo / pipeline / bench / eval / tools / memory / company / company-chat / serve / chat
 │  ├─ server.py        # zero-dependency web console (`serve`): live stream + growing graph
 │  ├─ web/             # the console's single-page app (plain HTML/CSS/JS, no CDN)
 │  └─ mcp_server.py    # the same 30 tools over MCP (stdio)
 ├─ tests/              # offline unit tests (no database needed)
 ├─ demos/              # demo script + saved reports
-├─ docs/               # submission notes + why-graph comparison
+├─ docs/               # submission notes, generated tool reference, why-graph comparison
 ├─ .github/workflows/  # CI: offline tests + FalkorDB end-to-end
 ├─ data/falkordb/      # graph storage (bind-mounted from the container)
 ├─ docker-compose.yml  # FalkorDB (and an optional `app` service: --profile app)

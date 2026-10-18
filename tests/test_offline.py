@@ -308,6 +308,14 @@ def test_unverified_path_flags_invented_case_node() -> None:
     assert _unverified_path_note("**Graph path** — `ACC-9003 -[INSIGHT]-> ACC-9004`", history) is not None
 
 
+def test_tools_doc_is_current() -> None:
+    """docs/TOOLS.md is generated — a new or renamed tool must not leave it stale."""
+    from graphsleuth.tool_docs import DOC_PATH, render_tools_markdown
+
+    assert DOC_PATH.exists(), "docs/TOOLS.md is missing — run `python -m graphsleuth tools --write`"
+    assert DOC_PATH.read_text(encoding="utf-8") == render_tools_markdown()
+
+
 def test_compose_final_uses_real_results() -> None:
     history = [
         {"tool": "recall", "arguments": {}, "result": {"notes": [{"kind": "episodic", "text": "prior finding"}]}},

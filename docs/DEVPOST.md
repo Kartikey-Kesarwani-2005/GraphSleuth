@@ -62,7 +62,7 @@ typed relationships, never flat rows.
 relationships; demo 15/15 tool calls ok; ring score 41.05 with 6 members; 6-hop money path from
 `ACC-EXT-01` to the collector `ACC-9100`; pipeline handoff created → accepted and case opened;
 `eval` 15/15 checks pass; 20-thread concurrency bench 2307 ops in 4 s (575 ops/s, reads p95 71 ms,
-writes p95 82 ms, 0 errors); MCP client sees all 30 tools; 36/36 offline tests pass. Run
+writes p95 82 ms, 0 errors); MCP client sees all 30 tools; 37/37 offline tests pass. Run
 `python -m graphsleuth eval` to reproduce the scorecard yourself.
 
 **Honest engineering notes:** FalkorDB's `ORDER BY` needed the `WITH … ORDER BY … LIMIT … RETURN`

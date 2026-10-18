@@ -301,6 +301,18 @@ def cmd_chat(args: argparse.Namespace) -> int:
         print("\n" + result["answer"] + "\n")
 
 
+def cmd_tools(args: argparse.Namespace) -> int:
+    from .tool_docs import DOC_PATH, render_tools_markdown
+
+    markdown = render_tools_markdown()
+    if args.write:
+        DOC_PATH.write_text(markdown, encoding="utf-8")
+        print(f"Wrote {DOC_PATH} ({len(markdown.splitlines())} lines)")
+        return 0
+    print(markdown, end="")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="graphsleuth", description="Fraud investigation agent on FalkorDB")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -349,6 +361,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--tenant", default=memory.DEFAULT_TENANT)
     p_eval.add_argument("--save", default="", help="write the scorecard JSON here")
     p_eval.set_defaults(func=cmd_eval)
+
+    p_tools = sub.add_parser("tools", help="tool reference: all 30 tools, generated from the specs")
+    p_tools.add_argument("--write", action="store_true", help="refresh docs/TOOLS.md instead of printing")
+    p_tools.set_defaults(func=cmd_tools)
 
     p_chat = sub.add_parser("chat", help="interactive investigation session")
     p_chat.add_argument("--tenant", default=memory.DEFAULT_TENANT, help="tenant graph to talk to")
