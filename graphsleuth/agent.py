@@ -134,12 +134,15 @@ class GraphSleuth:
         keeps at most `memory.save_playbook` playbooks, so memory stays useful
         instead of becoming a log.
 
-        A run the round budget cut short teaches nothing: distilling a truncated
-        schedule would file an incomplete procedure as if it had produced the
-        verdict.
+        Two runs teach nothing, because distilling them would file a procedure as
+        if it had produced the verdict: one the round budget cut short, and one
+        whose probes all came back empty (an empty or wrong graph).
         """
         if not complete:
             self._log("  [memory] no playbook learned — the run hit its round budget")
+            return
+        if _probes_ran_empty(self.history):
+            self._log("  [memory] no playbook learned — the investigation found no evidence")
             return
         try:
             playbook = memory.distill_playbook(self.history, question, self.tenant)
@@ -419,6 +422,87 @@ def _ring_summary(history: list[dict], target: str) -> str:
     return f"signals around {target}"
 
 
+def _flow_hops(flow: dict) -> list[dict]:
+    """Every transaction hop a `trace_money_flow` result contains (both directions)."""
+    hops: list[dict] = []
+    for direction in ("incoming", "outgoing"):
+        for level in (flow.get(direction) or {}).get("levels") or []:
+            hops.extend(level.get("hops") or [])
+    return hops
+
+
+def _evidence_seen(history: list[dict]) -> bool:
+    """Did the tools actually find anything in this graph?
+
+    False means the tenant is empty or wrong (`python -m graphsleuth seed` builds
+    the demo network), not that the target is clean. Every offline brain asks this
+    before claiming a finding — and before writing one.
+    """
+    searches = _last(history, "entity_search") or {}
+    clusters = (_last(history, "detect_suspicious_cluster") or {}).get("clusters") or []
+    links = (_last(history, "find_shared_links") or {}).get("links") or []
+    path = (_last(history, "shortest_connection") or {}).get("path") or []
+    neighbours = (_last(history, "graph_neighbors") or {}).get("node_count") or 0
+    return bool(
+        searches.get("matches")
+        or clusters
+        or links
+        or _flow_hops(_last(history, "trace_money_flow") or {})
+        or path
+        or neighbours
+    )
+
+
+def _tool_names(history: list[dict]) -> list[str]:
+    """Distinct tool names in call order."""
+    names: list[str] = []
+    for entry in history:
+        if entry["tool"] not in names:
+            names.append(entry["tool"])
+    return names
+
+
+_EVIDENCE_PROBES = {
+    "entity_search",
+    "graph_neighbors",
+    "find_shared_links",
+    "detect_suspicious_cluster",
+    "trace_money_flow",
+    "shortest_connection",
+}
+
+
+def _probes_ran_empty(history: list[dict]) -> bool:
+    """The standard probes ran AND every one of them came back empty.
+
+    The signature of an empty or wrong tenant — as opposed to a run that simply
+    used other tools, which must not be treated as "found nothing".
+    """
+    ran = [entry for entry in history if entry.get("tool") in _EVIDENCE_PROBES]
+    return bool(ran) and not _evidence_seen(history)
+
+
+def _actions_taken(history: list[dict]) -> list[str]:
+    """The write actions a trace really contains, with the ids the graph returned."""
+    actions: list[str] = []
+    case = _last(history, "open_case") or {}
+    if case.get("case_id"):
+        actions.append(f"opened {case['case_id']} involving {', '.join(case.get('involves', []))}")
+    note = _last(history, "add_case_note") or {}
+    if note.get("note_id"):
+        actions.append(f"added evidence note {note['note_id']} to {note['case_id']}")
+    flagged = _last(history, "flag_account") or {}
+    if flagged.get("alert_id"):
+        actions.append(
+            f"flagged {flagged['account']} as {flagged['severity']} ({flagged['alert_id']}), "
+            "status under_review"
+        )
+    memo = _last(history, "remember") or {}
+    if memo.get("note_id"):
+        actions.append(f"wrote memory {memo['note_id']} linked to {memo.get('linked_to')}")
+    return actions
+
+
 # The concrete case every offline brain verifies: the same money path, and the same
 # counterfactual stress test the verdict must survive. Shared so the demo walkthrough
 # and the independent verifier agent can never drift apart.
@@ -485,9 +569,13 @@ def build_demo_brain(target: str = "ACC-9003", handoff: bool = False) -> Scripte
             "find_similar_rings",
             {"ring_key": "top"},
         ),
+        # Writes are gated on evidence: on an empty or wrong graph (or an unseeded
+        # tenant) these steps resolve to None and ScriptedBrain skips them, so the
+        # fallback never opens a case, flags an account or writes "confirmed mule
+        # chain" about an account the graph has never seen.
         (
             "open_case",
-            lambda history: {
+            lambda history: None if not _evidence_seen(history) else {
                 "title": f"Mule ring around {target}",
                 "summary": _ring_summary(history, target),
                 "entity_ids": _dedupe_ids(
@@ -497,7 +585,9 @@ def build_demo_brain(target: str = "ACC-9003", handoff: bool = False) -> Scripte
         ),
         (
             "add_case_note",
-            lambda history: {
+            lambda history: None
+            if not _evidence_seen(history)
+            else {
                 "case_id": from_result("open_case", "case_id", "")(history),
                 "text": (
                     f"Evidence: {_ring_summary(history, target)}. Money chain traced from ACC-EXT-01 to "
@@ -508,7 +598,9 @@ def build_demo_brain(target: str = "ACC-9003", handoff: bool = False) -> Scripte
         ),
         (
             "flag_account",
-            lambda history: {
+            lambda history: None
+            if not _evidence_seen(history)
+            else {
                 "account_id": target,
                 "severity": "high",
                 "reason": (
@@ -520,7 +612,9 @@ def build_demo_brain(target: str = "ACC-9003", handoff: bool = False) -> Scripte
         ),
         (
             "remember",
-            lambda history: {
+            lambda history: None
+            if not _evidence_seen(history)
+            else {
                 "kind": "episodic",
                 "text": (
                     f"Investigated {target}: {_ring_summary(history, target)}. Confirmed same-day mule chain "
@@ -548,6 +642,48 @@ def compose_final(question: str, history: list[dict]) -> str:
     clusters = cluster.get("clusters") or []
     top = clusters[0] if clusters else {}
     members = top.get("members", [])
+
+    # No evidence: say exactly that. An empty or wrong tenant must never be dressed
+    # up as a finding — the fallback used to invent a ring, a beneficiary and a
+    # "high confidence" line out of nothing.
+    if not _evidence_seen(history):
+        tenant = db.resolve_tenant()
+        seen = []
+        for tool, message in (
+            (
+                "entity_search",
+                f"entity_search matched "
+                f"{len((_last(history, 'entity_search') or {}).get('matches') or [])} entities "
+                f"for {target}",
+            ),
+            ("find_shared_links", "find_shared_links returned no shared device, beneficiary or alert"),
+            ("detect_suspicious_cluster", "detect_suspicious_cluster returned no cluster"),
+            ("trace_money_flow", "trace_money_flow followed no transaction"),
+            ("shortest_connection", "shortest_connection found no path"),
+        ):
+            if _last(history, tool) is not None:
+                seen.append(message)
+        actions = _actions_taken(history)
+        return "\n".join(
+            [
+                f"**Verdict** — none reached: the tools found no evidence about {target} in tenant "
+                f"`{tenant}`, so there is nothing here to confirm or clear.",
+                "",
+                "**What the tools saw**",
+                *[f"- {item}" for item in seen],
+                "",
+                "**Why** — this is an empty or wrong graph, not a clean account. Check the active "
+                "tenant with `python -m graphsleuth status`, and build the demo network with "
+                "`python -m graphsleuth seed` (`--tenant <name>` for a non-default tenant).",
+                "",
+                "**Tools & queries used** — " + ", ".join(_tool_names(history)),
+                "",
+                "**Actions taken** — "
+                + ("; ".join(actions) if actions else "none — nothing was written to the graph."),
+                "",
+                "**Confidence** — n/a: no verdict was reached.",
+            ]
+        )
 
     lines: list[str] = []
     lines.append(f"**Verdict** — {target} is a confirmed hop in a {top.get('size', 0)}-account mule ring "
@@ -641,28 +777,9 @@ def compose_final(question: str, history: list[dict]) -> str:
         )
 
     lines.append("")
-    tools_used = []
-    for entry in history:
-        if entry["tool"] not in tools_used:
-            tools_used.append(entry["tool"])
-    lines.append("**Tools & queries used** — " + ", ".join(tools_used))
+    lines.append("**Tools & queries used** — " + ", ".join(_tool_names(history)))
 
-    actions: list[str] = []
-    case = _last(history, "open_case") or {}
-    if case.get("case_id"):
-        actions.append(f"opened {case['case_id']} involving {', '.join(case.get('involves', []))}")
-    note = _last(history, "add_case_note") or {}
-    if note.get("note_id"):
-        actions.append(f"added evidence note {note['note_id']} to {note['case_id']}")
-    flagged = _last(history, "flag_account") or {}
-    if flagged.get("alert_id"):
-        actions.append(
-            f"flagged {flagged['account']} as {flagged['severity']} ({flagged['alert_id']}), "
-            "status under_review"
-        )
-    memo = _last(history, "remember") or {}
-    if memo.get("note_id"):
-        actions.append(f"wrote memory {memo['note_id']} linked to {memo.get('linked_to')}")
+    actions = _actions_taken(history)
     lines.append("")
     lines.append("**Actions taken** — " + ("; ".join(actions) if actions else "none"))
 
@@ -672,7 +789,17 @@ def compose_final(question: str, history: list[dict]) -> str:
     # point of failure, say so instead of claiming "high".
     robustness = counter.get("robustness")
     resilience_verdict = str(resilience.get("verdict") or "")
-    if isinstance(robustness, (int, float)) and robustness <= 40:
+    if not counter or not isinstance(robustness, (int, float)):
+        # No counterfactual ran (or it produced no usable numbers): the run cannot
+        # claim the verdict survives losing its key link, so it must not claim
+        # "high" — and it must never print "robustness n/a/100".
+        lines.append(
+            "**Confidence** — medium, NOT high: no counterfactual stress test ran in this trace, "
+            "so how much the conclusion leans on a single link is unknown. Missing: a "
+            "`what_if_removed` check on the decisive device/path, beneficial-owner confirmation "
+            "for ACC-9100 and the source of funds behind ACC-EXT-01."
+        )
+    elif robustness <= 40:
         lines.append(
             "**Confidence** — medium, NOT high: the counterfactual shows the conclusion "
             f"leans on a single link (robustness {robustness}/100). Corroborate before acting."
@@ -689,7 +816,7 @@ def compose_final(question: str, history: list[dict]) -> str:
         lines.append(
             "**Confidence** — high. Signals agree (shared devices + shared beneficiary + prior "
             "alerts + same-day pass-through), the verdict survives the counterfactual "
-            f"(robustness {robustness if robustness is not None else 'n/a'}/100). Still missing: "
-            "beneficial-owner confirmation for ACC-9100 and the source of funds behind ACC-EXT-01."
+            f"(robustness {robustness}/100). Still missing: beneficial-owner confirmation for "
+            "ACC-9100 and the source of funds behind ACC-EXT-01."
         )
     return "\n".join(lines)

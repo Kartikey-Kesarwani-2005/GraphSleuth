@@ -197,8 +197,11 @@ class ScriptedBrain:
     """Deterministic brain for the offline fallback (no API key available).
 
     `plan` is a list of `(tool_name, args)` where `args` may be a dict or a
-    callable `history -> dict` so later calls can use earlier results.
-    When the plan runs out, `on_finish(question, history)` builds the answer.
+    callable `history -> dict | None` so later calls can use earlier results.
+    A callable that returns `None` skips the step: the offline plans use that to
+    keep a write step (open a case, flag an account) from acting on an empty
+    result. When the plan runs out, `on_finish(question, history)` builds the
+    answer.
     """
 
     def __init__(
@@ -240,13 +243,18 @@ class ScriptedBrain:
             return LLMResponse(content=self._preamble)
 
         if self._queue:
-            name, args = self._queue.pop(0)
-            resolved = args(history) if callable(args) else dict(args)
-            self._step += 1
-            return LLMResponse(
-                tool_calls=[ToolCall(id=f"demo_{self._step}", name=name, arguments=resolved)],
-                content=None,
-            )
+            while self._queue:
+                name, args = self._queue.pop(0)
+                resolved = args(history) if callable(args) else dict(args)
+                # `None` = this step's precondition is not met in this graph; skip it
+                # rather than call a tool with nothing to act on.
+                if resolved is None:
+                    continue
+                self._step += 1
+                return LLMResponse(
+                    tool_calls=[ToolCall(id=f"demo_{self._step}", name=name, arguments=resolved)],
+                    content=None,
+                )
 
         return LLMResponse(content=self._on_finish(question, history))
 

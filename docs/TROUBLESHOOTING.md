@@ -26,6 +26,9 @@ If CLI crashes on LLM output with `UnicodeEncodeError`:
 - `demo` and `pipeline` refuse to run on an unseeded graph (otherwise the agent
   investigates nothing and still reports a verdict). Seed it:
   `python -m graphsleuth seed` — or `--tenant <name>` for a non-default tenant.
+- `chat` still starts (it has no graph to check up front), but the offline brain
+  now reports "**Verdict** — none reached" with what each tool returned, and it
+  writes no case, flag or playbook: an empty graph is not a clean account.
 
 ## LLM quota/fallback
 - With `GROQ_API_KEY` set, it tries `openai/gpt-oss-120b` → `openai/gpt-oss-20b` → `qwen/qwen3.8-27b` automatically.
