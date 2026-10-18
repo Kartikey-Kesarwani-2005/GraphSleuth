@@ -198,7 +198,7 @@ session's evidence trail, which is what `demo --save`, the console's evidence pa
 
 ### `run_cypher`
 
-**Read-only.** Read-only Cypher escape hatch for questions the other tools cannot answer. Only MATCH / OPTIONAL MATCH / RETURN / WITH / CALL / UNWIND / SHOW / EXPLAIN. Return a single column aliased AS row when possible.
+**Read-only.** Read-only Cypher escape hatch for questions the other tools cannot answer. Only MATCH / OPTIONAL MATCH / RETURN / WITH / CALL / UNWIND / SHOW / EXPLAIN. `CALL` is restricted to read-only procedures (algo.*, db.labels, db.relationshipTypes, db.propertyKeys, db.indexes, db.constraints, db.idx.fulltext.queryNodes, dbms.procedures/functions). Return a single column aliased AS row when possible.
 
 | argument | type | required | description |
 | --- | --- | --- | --- |

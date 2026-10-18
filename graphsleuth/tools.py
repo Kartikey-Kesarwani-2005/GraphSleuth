@@ -1577,6 +1577,42 @@ READ_ONLY_BLOCKLIST = re.compile(
 )
 ALLOWED_START = ("MATCH", "OPTIONAL", "RETURN", "WITH", "CALL", "UNWIND", "SHOW", "EXPLAIN")
 
+# `CALL <procedure>` reaches code a verb denylist cannot see: a query with no write verb
+# in it can still invoke a write procedure (`db.idx.fulltext.drop`, `dbms.security.*`).
+# Procedures are allowlisted by name instead, so anything unrecognised is refused rather
+# than trusted. `algo.*` is the FalkorDB read-only algorithm family the other tools use;
+# the db.* entries are metadata reads. `CALL { ... }` subqueries are not procedure calls
+# and stay covered by the verb denylist above.
+READ_ONLY_PROCEDURE_PREFIXES = ("algo.",)
+READ_ONLY_PROCEDURES = {
+    "db.labels",
+    "db.relationshiptypes",
+    "db.propertykeys",
+    "db.indexes",
+    "db.constraints",
+    "db.idx.fulltext.querynodes",
+    "db.idx.fulltext.queryrelationships",
+    "dbms.procedures",
+    "dbms.functions",
+    "dbms.components",
+    "dbms.info",
+}
+_RE_CALL_PROCEDURE = re.compile(r"\bCALL\s+([A-Za-z_`][A-Za-z0-9_.`]*)", re.IGNORECASE)
+
+
+def _blocked_procedures(cypher: str) -> list[str]:
+    """Procedure names a read-only query may not call (empty when every call is allowed).
+
+    Operates on the literal-stripped query, so a `CALL` inside a string does not count.
+    """
+    blocked: list[str] = []
+    for match in _RE_CALL_PROCEDURE.finditer(cypher):
+        name = match.group(1).strip("`").lower()
+        if name in READ_ONLY_PROCEDURES or name.startswith(READ_ONLY_PROCEDURE_PREFIXES):
+            continue
+        blocked.append(match.group(1).strip("`"))
+    return blocked
+
 
 # --------------------------------------------------------------------------- #
 # graph algorithms as agent tools (FalkorDB native procedures)
@@ -1970,6 +2006,16 @@ def run_cypher(query: str, purpose: str = "") -> dict:
         return {
             "error": "read-only tool: CREATE/DELETE/SET/MERGE/REMOVE/DROP/ALTER/LOAD are not allowed",
             "hint": "use flag_account, open_case, add_case_note or remember for writes",
+        }
+    blocked_calls = _blocked_procedures(stripped)
+    if blocked_calls:
+        return {
+            "error": "read-only tool: procedure(s) not in the read-only allowlist: "
+            + ", ".join(blocked_calls),
+            "hint": (
+                "allowed: algo.*, db.labels, db.relationshipTypes, db.propertyKeys, "
+                "db.indexes, db.constraints, db.idx.fulltext.queryNodes, dbms.procedures"
+            ),
         }
 
     try:
@@ -2458,6 +2504,9 @@ TOOL_SPECS: list[dict] = [
         "run_cypher",
         "Read-only Cypher escape hatch for questions the other tools cannot answer. "
         "Only MATCH / OPTIONAL MATCH / RETURN / WITH / CALL / UNWIND / SHOW / EXPLAIN. "
+        "`CALL` is restricted to read-only procedures (algo.*, db.labels, "
+        "db.relationshipTypes, db.propertyKeys, db.indexes, db.constraints, "
+        "db.idx.fulltext.queryNodes, dbms.procedures/functions). "
         "Return a single column aliased AS row when possible.",
         {
             "query": {"type": "string", "description": "read-only Cypher"},

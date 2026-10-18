@@ -156,6 +156,36 @@ def test_readonly_guard_blocks_writes() -> None:
     assert "query must start" not in tools.run_cypher("MATCH (n) WHERE n.text = 'CREATE CASE' RETURN n AS row")
 
 
+def test_readonly_guard_allowlists_procedures() -> None:
+    """A `CALL` reaches code the verb denylist cannot see, so procedures are
+    allowlisted by name: an unknown one is refused before it ever runs."""
+    # write procedures with no forbidden verb in the query text
+    assert "error" in tools.run_cypher("CALL db.idx.fulltext.drop('Account')")
+    assert "error" in tools.run_cypher(
+        "MATCH (n) CALL db.idx.fulltext.createNodeIndex('Account', ['id']) RETURN n AS row"
+    )
+    assert "error" in tools.run_cypher("CALL dbms.security.createUser('x', 'y', false)")
+
+    # the allowlist logic itself
+    assert tools._blocked_procedures("CALL algo.betweenness({})") == []
+    assert tools._blocked_procedures("CALL algo.pageRank.stream()") == []
+    assert tools._blocked_procedures("CALL db.labels() YIELD label") == []
+    assert tools._blocked_procedures("CALL db.relationshipTypes()") == []
+    assert tools._blocked_procedures("CALL dbms.procedures()") == []
+    assert tools._blocked_procedures("MATCH (n) CALL db.idx.fulltext.drop('Account')") == [
+        "db.idx.fulltext.drop"
+    ]
+    # `CALL { ... }` is a subquery, not a procedure call, and stays verb-guarded
+    assert tools._blocked_procedures("CALL { MATCH (n) RETURN n AS row }") == []
+    # a CALL inside a string literal is not a procedure call either
+    assert tools._blocked_procedures(tools._strip_string_literals("RETURN 'CALL evil.drop()' AS row")) == []
+
+    # an allowlisted procedure is not stopped by the guard (it then fails only because
+    # FalkorDB is not running in this offline test)
+    empty = str(tools.run_cypher("CALL db.labels()"))
+    assert "allowlist" not in empty and "read-only tool" not in empty
+
+
 def test_guard_reports_start_phrase() -> None:
     # EXPLAIN and other allowed verbs must pass the guard and reach the database
     # (here it fails only because FalkorDB is not running in this offline test).

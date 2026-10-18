@@ -148,7 +148,9 @@ def check_verified_actions(tenant: str) -> tuple[bool, str]:
 
 def check_readonly_guard(tenant: str) -> tuple[bool, str]:
     result = run_cypher("MATCH (n) DETACH DELETE n")
-    ok = "error" in result
+    # a write hidden behind CALL must be refused too (procedure allowlist)
+    procedure = run_cypher("CALL db.idx.fulltext.drop('Account')")
+    ok = "error" in result and "error" in procedure
     return ok, (result.get("error") or "write was NOT blocked")[:90]
 
 
