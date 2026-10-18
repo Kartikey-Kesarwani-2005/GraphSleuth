@@ -305,37 +305,20 @@ def build() -> dict[str, Any]:
 
 # --- loading -----------------------------------------------------------------
 
-def _batch(cypher: str, rows: list[dict], size: int = 400) -> None:
-    for start in range(0, len(rows), size):
-        db.query(cypher, {"rows": rows[start : start + size]})
-
-
-def _wipe() -> None:
-    db.query("MATCH (n) DETACH DELETE n RETURN count(n) AS row")
-
-
-def _create_indexes() -> None:
-    for label in ("Person", "Team", "Project", "System", "Doc", "Ticket", "Chat", "Decision"):
-        try:
-            db.query(f"CREATE INDEX FOR (n:{label}) ON (n.id)")
-        except Exception:
-            pass  # an existing index is not a problem
-
-
-def _node_rows(items: list[dict]) -> list[dict]:
-    return [dict(item) for item in items]
+# Labels indexed for id lookups, and the label -> rows map the loader walks.
+INDEX_LABELS = ("Person", "Team", "Project", "System", "Doc", "Ticket", "Chat", "Decision")
 
 
 def seed(reset: bool = True, verbose: bool = True) -> dict:
     """Write the company graph into the *active* tenant graph (caller sets the tenant)."""
     if reset:
-        _wipe()
-    _create_indexes()
+        db.wipe_graph()
+    db.create_indexes(INDEX_LABELS)
 
     def load(label: str, items: list[dict]) -> None:
-        _batch(
+        db.insert_rows(
             f"UNWIND $rows AS r MERGE (n:{label} {{id: r.id}}) SET n += r RETURN count(n) AS row",
-            _node_rows(items),
+            [dict(item) for item in items],  # copy: a re-seed never mutates the constants
         )
 
     load("Person", PEOPLE)
@@ -351,7 +334,7 @@ def seed(reset: bool = True, verbose: bool = True) -> dict:
     for rel, src, dst in EDGES:
         edges.setdefault(rel, []).append({"src": src, "dst": dst})
     for rel, rows in edges.items():
-        _batch(
+        db.insert_rows(
             f"UNWIND $rows AS r MATCH (a {{id: r.src}}), (b {{id: r.dst}}) "
             f"MERGE (a)-[:{rel}]->(b) RETURN count(*) AS row",
             rows,

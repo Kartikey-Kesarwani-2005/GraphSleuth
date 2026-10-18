@@ -333,6 +333,66 @@ def _compact(value: Any) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# history readers + shared case spine (every offline brain uses these)
+# --------------------------------------------------------------------------- #
+def _last(history: list[dict], tool: str) -> dict | None:
+    for entry in reversed(history):
+        if entry["tool"] == tool and isinstance(entry["result"], dict):
+            return entry["result"]
+    return None
+
+
+def _pending_handoff(history: list[dict]) -> str:
+    """Handoff id of the newest pending handoff seen by `list_handoffs`."""
+    handoffs = (_last(history, "list_handoffs") or {}).get("handoffs") or []
+    return handoffs[0]["handoff_id"] if handoffs else ""
+
+
+def _dedupe_ids(ids: list[str]) -> list[str]:
+    """Order-preserving de-duplication for entity id lists."""
+    seen: set[str] = set()
+    unique: list[str] = []
+    for entity_id in ids:
+        if entity_id not in seen:
+            seen.add(entity_id)
+            unique.append(entity_id)
+    return unique
+
+
+def _cluster_members(history: list[dict], fallback: str) -> list[str]:
+    """Members of the top detected cluster, else the linked accounts (+ the target)."""
+    clusters = (_last(history, "detect_suspicious_cluster") or {}).get("clusters") or []
+    if clusters:
+        return [member["account"] for member in clusters[0]["members"]]
+    links = _last(history, "find_shared_links") or {}
+    linked = [link.get("account") for link in (links.get("links") or []) if link.get("account")]
+    return _dedupe_ids(linked + [fallback])
+
+
+def _ring_summary(history: list[dict], target: str) -> str:
+    """One-line description of the top cluster for case titles and notes."""
+    clusters = (_last(history, "detect_suspicious_cluster") or {}).get("clusters") or []
+    if clusters:
+        top = clusters[0]
+        accounts = ", ".join(member["account"] for member in top["members"])
+        return f"{top['size']}-account cluster ({accounts}), score {top['cluster_score']}"
+    return f"signals around {target}"
+
+
+# The concrete case every offline brain verifies: the same money path, and the same
+# counterfactual stress test the verdict must survive. Shared so the demo walkthrough
+# and the independent verifier agent can never drift apart.
+CASE_MONEY_PATH: tuple[str, dict] = (
+    "shortest_connection",
+    {"id_a": "ACC-EXT-01", "id_b": "ACC-9100", "max_depth": 8, "via": ["ORIGINATED", "DESTINED"]},
+)
+CASE_STRESS_TEST: tuple[str, dict] = (
+    "what_if_removed",
+    {"entity_id": "DEV-9001", "from_id": "ACC-EXT-01", "to_id": "ACC-9100", "max_depth": 8},
+)
+
+
+# --------------------------------------------------------------------------- #
 # offline fallback brain (used only when no LLM key is configured)
 # --------------------------------------------------------------------------- #
 def build_demo_brain(target: str = "ACC-9003", handoff: bool = False) -> ScriptedBrain:
@@ -352,24 +412,6 @@ def build_demo_brain(target: str = "ACC-9003", handoff: bool = False) -> Scripte
 
         return resolve
 
-    def cluster_members(history: list[dict]) -> list[str]:
-        for entry in reversed(history):
-            if entry["tool"] == "detect_suspicious_cluster" and isinstance(entry["result"], dict):
-                clusters = entry["result"].get("clusters") or []
-                if clusters:
-                    return [member["account"] for member in clusters[0]["members"]]
-        return [target]
-
-    def ring_summary(history: list[dict]) -> str:
-        for entry in reversed(history):
-            if entry["tool"] == "detect_suspicious_cluster" and isinstance(entry["result"], dict):
-                clusters = entry["result"].get("clusters") or []
-                if clusters:
-                    top = clusters[0]
-                    accounts = ", ".join(member["account"] for member in top["members"])
-                    return f"{top['size']}-account cluster ({accounts}), score {top['cluster_score']}"
-        return f"cluster around {target}"
-
     plan: list[tuple[str, Any]] = []
     if handoff:
         plan += [
@@ -383,29 +425,12 @@ def build_demo_brain(target: str = "ACC-9003", handoff: bool = False) -> Scripte
         ("trace_money_flow", {"account_id": target, "depth": 4}),
         ("find_shared_links", {"account_id": target}),
         ("detect_suspicious_cluster", {"min_signals": 2}),
+        CASE_MONEY_PATH,
+        # Counterfactual stress tests (read-only): the verdict must survive losing
+        # the shared device it leans on, and every member is ranked by how
+        # load-bearing it is (articulation points).
+        CASE_STRESS_TEST,
         (
-            "shortest_connection",
-            {
-                "id_a": "ACC-EXT-01",
-                "id_b": "ACC-9100",
-                "max_depth": 8,
-                "via": ["ORIGINATED", "DESTINED"],
-            },
-        ),
-        (
-            # Counterfactual stress test: act only if the conclusion survives the
-            # removal of the shared device the case leans on (read-only).
-            "what_if_removed",
-            {
-                "entity_id": "DEV-9001",
-                "from_id": "ACC-EXT-01",
-                "to_id": "ACC-9100",
-                "max_depth": 8,
-            },
-        ),
-        (
-            # Whole-ring batch counterfactual: rank every member by how load-bearing
-            # it is and name the articulation points (read-only).
             "assess_ring_resilience",
             {"ring_key": "top"},
         ),
@@ -424,9 +449,9 @@ def build_demo_brain(target: str = "ACC-9003", handoff: bool = False) -> Scripte
             "open_case",
             lambda history: {
                 "title": f"Mule ring around {target}",
-                "summary": ring_summary(history),
+                "summary": _ring_summary(history, target),
                 "entity_ids": _dedupe_ids(
-                    cluster_members(history) + ["ACC-9100", "DEV-9001", "DEV-9002"]
+                    _cluster_members(history, target) + ["ACC-9100", "DEV-9001", "DEV-9002"]
                 ),
             },
         ),
@@ -435,7 +460,7 @@ def build_demo_brain(target: str = "ACC-9003", handoff: bool = False) -> Scripte
             lambda history: {
                 "case_id": from_result("open_case", "case_id", "")(history),
                 "text": (
-                    f"Evidence: {ring_summary(history)}. Money chain traced from ACC-EXT-01 to "
+                    f"Evidence: {_ring_summary(history, target)}. Money chain traced from ACC-EXT-01 to "
                     "ACC-9100 via the shared devices DEV-9001/DEV-9002; prior alerts on "
                     "ACC-9001, ACC-9002 and ACC-9004."
                 ),
@@ -458,40 +483,15 @@ def build_demo_brain(target: str = "ACC-9003", handoff: bool = False) -> Scripte
             lambda history: {
                 "kind": "episodic",
                 "text": (
-                    f"Investigated {target}: {ring_summary(history)}. Confirmed same-day mule chain "
+                    f"Investigated {target}: {_ring_summary(history, target)}. Confirmed same-day mule chain "
                     "ACC-EXT-01 -> ACC-9001 -> ... -> ACC-9005 -> ACC-9100 through shared devices "
                     "DEV-9001/DEV-9002; account flagged and case opened."
                 ),
-                "about_ids": _dedupe_ids(cluster_members(history) + ["ACC-9100"]),
+                "about_ids": _dedupe_ids(_cluster_members(history, target) + ["ACC-9100"]),
             },
         ),
     ]
     return ScriptedBrain(plan=plan, on_finish=compose_final)
-
-
-def _last(history: list[dict], tool: str) -> dict | None:
-    for entry in reversed(history):
-        if entry["tool"] == tool and isinstance(entry["result"], dict):
-            return entry["result"]
-    return None
-
-
-def _pending_handoff(history: list[dict]) -> str:
-    """Handoff id of the newest pending handoff seen by `list_handoffs`."""
-    result = _last(history, "list_handoffs") or {}
-    handoffs = result.get("handoffs") or []
-    return handoffs[0]["handoff_id"] if handoffs else ""
-
-
-def _dedupe_ids(ids: list[str]) -> list[str]:
-    """Order-preserving de-duplication for entity id lists."""
-    seen: set[str] = set()
-    unique: list[str] = []
-    for entity_id in ids:
-        if entity_id not in seen:
-            seen.add(entity_id)
-            unique.append(entity_id)
-    return unique
 
 
 def compose_final(question: str, history: list[dict]) -> str:

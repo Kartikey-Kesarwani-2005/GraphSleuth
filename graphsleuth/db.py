@@ -105,19 +105,6 @@ def list_graphs() -> list[str]:
         return []
 
 
-def graph_stats(name: str) -> dict[str, Any]:
-    """Node / relationship counts for one graph (used by `status`)."""
-    try:
-        rows = graph(name).query(
-            "MATCH (n) WITH count(n) AS nodes "
-            "OPTIONAL MATCH ()-[r]->() RETURN [nodes, count(r)] AS row"
-        ).result_set
-        counts = rows[0] if rows else [0, 0]
-        return {"graph": name, "nodes": counts[0], "relationships": counts[1]}
-    except Exception as exc:  # pragma: no cover - admin helper, never fatal
-        return {"graph": name, "error": str(exc)[:200]}
-
-
 def drop_graph(name: str) -> bool:
     """Delete a whole tenant graph (GRAPH.DELETE). Used by seed --wipe-tenant."""
     try:
@@ -192,6 +179,34 @@ def query(
         else:
             rows.append([to_json(v) for v in values])
     return rows
+
+
+def insert_rows(cypher: str, rows: list[dict], size: int = 400) -> None:
+    """Write rows in batches with one parameterised ``UNWIND`` statement.
+
+    Both seeders (fraud graph and company graph) load through this: FalkorDB
+    handles a few hundred rows per round trip far better than one giant write.
+    """
+    for start in range(0, len(rows), size):
+        query(cypher, {"rows": rows[start : start + size]})
+
+
+def wipe_graph() -> None:
+    """Delete every node and relationship of the active graph (a seeding reset)."""
+    query("MATCH (n) DETACH DELETE n RETURN count(n) AS row")
+
+
+def create_indexes(labels: tuple[str, ...] | list[str]) -> None:
+    """Range indexes on the ``id`` property of each label (DDL: no RETURN clause).
+
+    An already-existing index is not an error, so failures are swallowed — the
+    seeders only care that lookups on ids are fast when they happen.
+    """
+    for label in labels:
+        try:
+            query(f"CREATE INDEX FOR (n:{label}) ON (n.id)")
+        except Exception:  # noqa: BLE001 - pre-existing index or older syntax
+            pass
 
 
 def _header_names(result: Any) -> list[str] | None:

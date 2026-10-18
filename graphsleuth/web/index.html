@@ -12,30 +12,49 @@
       <span class="logo">◈</span>
       <div>
         <strong>GraphSleuth</strong>
-        <small>context layer: FalkorDB · agent chooses its own tools</small>
+        <small>context layer: FalkorDB · the agent chooses its own tools</small>
       </div>
+      <span class="chips">
+        <span class="chip">30 tools</span>
+        <span class="chip">MCP</span>
+        <span class="chip">read-only counterfactuals</span>
+      </span>
     </div>
     <div id="status" class="status">connecting…</div>
   </header>
 
   <main>
     <section class="left">
-      <form id="controls">
-        <select id="mode" aria-label="mode">
-          <option value="fraud">Fraud investigation — connected data + memory & coordination</option>
-          <option value="company">Company Brain — org knowledge, ownership & decisions</option>
-        </select>
-        <input id="target" value="ACC-9003" spellcheck="false" aria-label="target entity" />
-        <input id="tenant" value="default" spellcheck="false" aria-label="tenant" />
-        <input id="question" class="hidden" placeholder="Ask a company question (optional, e.g. who knows SYS-ledger-db?)" spellcheck="false" aria-label="company question" />
-        <label class="chk"><input type="checkbox" id="offline" /> offline</label>
-        <button type="submit">Investigate</button>
+      <form id="controls" class="card controls">
+        <div class="field span2">
+          <label for="mode">Mode</label>
+          <select id="mode" aria-label="mode">
+            <option value="fraud">Fraud investigation — connected data + memory &amp; coordination</option>
+            <option value="company">Company Brain — org knowledge, ownership &amp; decisions</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="target">Target entity</label>
+          <input id="target" value="ACC-9003" spellcheck="false" aria-label="target entity" />
+        </div>
+        <div class="field">
+          <label for="tenant">Tenant graph</label>
+          <input id="tenant" value="default" spellcheck="false" aria-label="tenant" />
+        </div>
+        <div id="questionwrap" class="field span2 hidden">
+          <label for="question">Ask the Company Brain</label>
+          <input id="question" placeholder="e.g. who knows SYS-ledger-db?" spellcheck="false" aria-label="company question" />
+        </div>
+        <div class="actions span2">
+          <label class="chk"><input type="checkbox" id="offline" /> offline brain (no API key)</label>
+          <button type="submit">Investigate</button>
+        </div>
       </form>
 
       <div id="verdict" class="card verdict hidden"></div>
 
       <div id="exports" class="card exports hidden">
-        <h2>Proof pack</h2>
+        <h2>▣ Proof pack <span class="pill">judge-ready artifact</span></h2>
         <div class="exportrow">
           <button id="copyverdict" type="button">Copy verdict</button>
           <button id="downloadmd" type="button">Download report (.md)</button>
@@ -47,25 +66,33 @@
       </div>
 
       <div id="stress" class="card stress hidden">
-        <h2>Counterfactual stress test <span id="stressverdict" class="pill"></span></h2>
+        <h2>⚖ Counterfactual stress test <span id="stressverdict" class="pill"></span></h2>
         <div id="stressbody"></div>
         <button id="stressrestore" type="button" class="ghost">Restore the graph</button>
       </div>
 
       <div class="card">
-        <h2>Live reasoning <span id="rounds" class="pill"></span></h2>
-        <ol id="steps" class="steps"></ol>
-        <p id="empty" class="muted">Press <em>Investigate</em> — the agent streams every tool call here.</p>
+        <h2>◉ Live reasoning <span id="rounds" class="pill"></span></h2>
+        <ol id="steps" class="steps" aria-live="polite"></ol>
+        <p id="empty" class="muted">Press <em>Investigate</em> — the agent streams every tool call here,
+          then the verdict.
+          <span class="quick">
+            <button type="button" class="chipbtn" data-target="ACC-9003">ACC-9003</button>
+            <button type="button" class="chipbtn" data-target="ACC-9002">ACC-9002</button>
+            <button type="button" class="chipbtn" data-target="ACC-EXT-01">ACC-EXT-01</button>
+          </span>
+        </p>
       </div>
 
       <div class="card">
-        <h2>Memory &amp; open cases <small id="memtenant" class="muted"></small></h2>
+        <h2>▤ Memory &amp; open cases <small id="memtenant" class="muted"></small></h2>
         <div id="memlist" class="memlist"></div>
       </div>
     </section>
 
     <section class="right">
       <canvas id="graph"></canvas>
+      <div id="graphstats" class="graphstats"></div>
       <div class="legend">
         <span><i class="dot focal"></i>focus</span>
         <span><i class="dot ring"></i>ring</span>

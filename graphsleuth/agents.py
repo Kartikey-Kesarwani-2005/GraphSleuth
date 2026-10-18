@@ -21,7 +21,16 @@ import re
 from typing import Any
 
 from . import explain, memory
-from .agent import GraphSleuth, _dedupe_ids, _last, build_demo_brain
+from .agent import (
+    CASE_MONEY_PATH,
+    CASE_STRESS_TEST,
+    GraphSleuth,
+    _cluster_members,
+    _dedupe_ids,
+    _last,
+    _ring_summary,
+    build_demo_brain,
+)
 from .llm import ScriptedBrain
 
 _RE_ENTITY = re.compile(r"(ACC-\d+|ACC-EXT-\d+|TX-\d+|AL-\d+|CASE-\d+)")
@@ -100,26 +109,6 @@ VERIFY_QUESTION = (
 # --------------------------------------------------------------------------- #
 # offline fallback brains (same two-step pipeline, deterministic)
 # --------------------------------------------------------------------------- #
-def _cluster_members(history: list[dict], fallback: str) -> list[str]:
-    result = _last(history, "detect_suspicious_cluster") or {}
-    clusters = result.get("clusters") or []
-    if clusters:
-        return [member["account"] for member in clusters[0]["members"]]
-    links = _last(history, "find_shared_links") or {}
-    linked = [link.get("account") for link in (links.get("links") or []) if link.get("account")]
-    return _dedupe_ids(linked + [fallback])
-
-
-def _ring_summary(history: list[dict], target: str) -> str:
-    result = _last(history, "detect_suspicious_cluster") or {}
-    clusters = result.get("clusters") or []
-    if clusters:
-        top = clusters[0]
-        accounts = ", ".join(member["account"] for member in top["members"])
-        return f"{top['size']}-account cluster ({accounts}), score {top['cluster_score']}"
-    return f"signals around {target}"
-
-
 def build_triage_brain(target: str) -> ScriptedBrain:
     """Offline stand-in for the triage agent: triage -> handoff -> memory."""
 
@@ -198,7 +187,7 @@ def compose_triage_final(question: str, history: list[dict]) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# the pipeline
+# verifier agent (offline brain + final composition)
 # --------------------------------------------------------------------------- #
 def build_verifier_brain(target: str, case_id: str = "") -> ScriptedBrain:
     """Offline stand-in for the verifier: independently re-checks then records."""
@@ -208,25 +197,9 @@ def build_verifier_brain(target: str, case_id: str = "") -> ScriptedBrain:
         ("find_shared_links", {"account_id": target}),
         ("list_alerts", {"limit": 10}),
         ("detect_suspicious_cluster", {"min_signals": 2}),
-        (
-            "shortest_connection",
-            {
-                "id_a": "ACC-EXT-01",
-                "id_b": "ACC-9100",
-                "max_depth": 8,
-                "via": ["ORIGINATED", "DESTINED"],
-            },
-        ),
-        (
-            # Adversarial stress test: the verdict must survive losing its key link.
-            "what_if_removed",
-            {
-                "entity_id": "DEV-9001",
-                "from_id": "ACC-EXT-01",
-                "to_id": "ACC-9100",
-                "max_depth": 8,
-            },
-        ),
+        CASE_MONEY_PATH,
+        # Adversarial stress test: the verdict must survive losing its key link.
+        CASE_STRESS_TEST,
         (
             "add_case_note",
             lambda history: {
@@ -443,7 +416,7 @@ def pipeline_markdown(result: dict) -> str:
         "",
     ]
     for index, entry in enumerate(result["triage"]["trace"], 1):
-        parts.append(f"{index}. `{entry['tool']}` → `{_compact(entry['result'])}`")
+        parts.append(f"{index}. `{entry['tool']}` → `{_trail_result(entry['result'])}`")
     triage_actions = explain.verified_actions(result["triage"]["trace"])
     parts += [
         "",
@@ -452,7 +425,7 @@ def pipeline_markdown(result: dict) -> str:
     ]
     parts += ["", "---", "", "## Agent 2 — Investigator", "", result["investigation"]["answer"], "", "### Investigator tool trace", ""]
     for index, entry in enumerate(result["investigation"]["trace"], 1):
-        parts.append(f"{index}. `{entry['tool']}` → `{_compact(entry['result'])}`")
+        parts.append(f"{index}. `{entry['tool']}` → `{_trail_result(entry['result'])}`")
     invest_actions = explain.verified_actions(result["investigation"]["trace"])
     parts += [
         "",
@@ -473,7 +446,7 @@ def pipeline_markdown(result: dict) -> str:
             "",
         ]
         for index, entry in enumerate(verification["trace"], 1):
-            parts.append(f"{index}. `{entry['tool']}` → `{_compact(entry['result'])}`")
+            parts.append(f"{index}. `{entry['tool']}` → `{_trail_result(entry['result'])}`")
         verify_actions = explain.verified_actions(verification["trace"])
         parts += [
             "",
@@ -483,7 +456,8 @@ def pipeline_markdown(result: dict) -> str:
     return "\n".join(parts)
 
 
-def _compact(value: Any) -> str:
+def _trail_result(value: Any) -> str:
+    """One evidence-trail line for a tool result: its first few keys/values."""
     if isinstance(value, dict):
         keys = ", ".join(f"{k}={value[k]}" for k in list(value)[:4])
         return keys[:200]

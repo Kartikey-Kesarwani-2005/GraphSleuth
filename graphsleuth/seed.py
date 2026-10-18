@@ -59,34 +59,6 @@ def _ts(offset_days: float = 0.0, base: datetime | None = None) -> str:
     return (base + timedelta(days=offset_days)).isoformat(timespec="seconds")
 
 
-def _batch(cypher: str, rows: list[dict], size: int = 400) -> None:
-    for start in range(0, len(rows), size):
-        db.query(cypher, {"rows": rows[start : start + size]})
-
-
-def _wipe() -> None:
-    db.query("MATCH (n) DETACH DELETE n RETURN count(n) AS row")
-
-
-def _create_indexes() -> None:
-    """Range indexes on the ids we look up constantly (DDL: no RETURN clause)."""
-    statements = [
-        "CREATE INDEX FOR (a:Account) ON (a.id)",
-        "CREATE INDEX FOR (p:Person) ON (p.id)",
-        "CREATE INDEX FOR (t:Transaction) ON (t.id)",
-        "CREATE INDEX FOR (d:Device) ON (d.id)",
-        "CREATE INDEX FOR (m:Merchant) ON (m.id)",
-        "CREATE INDEX FOR (al:Alert) ON (al.id)",
-        "CREATE INDEX FOR (c:Case) ON (c.id)",
-        "CREATE INDEX FOR (n:MemoryNote) ON (n.id)",
-    ]
-    for statement in statements:
-        try:
-            db.query(statement)
-        except Exception:
-            pass  # an existing index (or older syntax) is not a problem
-
-
 def _make_entities() -> tuple[list[dict], list[dict], list[dict]]:
     people: list[dict] = []
     accounts: list[dict] = []
@@ -289,8 +261,10 @@ def _ring_alerts() -> list[dict]:
 def seed(reset: bool = True, verbose: bool = True) -> dict:
     """Create the whole dataset. Safe to run repeatedly (it wipes first by default)."""
     if reset:
-        _wipe()
-    _create_indexes()
+        db.wipe_graph()
+    db.create_indexes(
+        ("Account", "Person", "Transaction", "Device", "Merchant", "Alert", "Case", "MemoryNote")
+    )
 
     people, accounts, devices = _make_entities()
     normal_ids = [a["id"] for a in accounts]
@@ -302,19 +276,19 @@ def seed(reset: bool = True, verbose: bool = True) -> dict:
 
     # --- nodes -----------------------------------------------------------------
     # MERGE + ON CREATE SET keeps re-seeding idempotent (no duplicates on --keep).
-    _batch(
+    db.insert_rows(
         "UNWIND $rows AS r MERGE (p:Person {id: r.id}) "
         "ON CREATE SET p.name = r.name, p.country = r.country, p.kyc = r.kyc, p.created_at = r.created_at "
         "RETURN count(p) AS row",
         people,
     )
-    _batch(
+    db.insert_rows(
         "UNWIND $rows AS r MERGE (a:Account {id: r.id}) "
         "ON CREATE SET a.type = r.type, a.status = r.status, a.risk_score = r.risk_score, "
         "a.opened_at = r.opened_at RETURN count(a) AS row",
         accounts,
     )
-    _batch(
+    db.insert_rows(
         "UNWIND $rows AS r MERGE (m:Merchant {id: r.id}) "
         "ON CREATE SET m.name = r.name, m.category = r.category RETURN count(m) AS row",
         [{"id": mid, "name": name, "category": cat} for mid, name, cat in MERCHANT_NAMES],
@@ -327,13 +301,13 @@ def seed(reset: bool = True, verbose: bool = True) -> dict:
         candidate = f"ACC-{person['id'][2:]}"
         if candidate in account_ids:
             ownership.append({"person": person["id"], "account": candidate})
-    _batch(
+    db.insert_rows(
         "UNWIND $rows AS r MATCH (p:Person {id: r.person}), (a:Account {id: r.account}) "
         "MERGE (p)-[:OWNS]->(a) RETURN count(*) AS row",
         ownership,
     )
 
-    _batch(
+    db.insert_rows(
         "UNWIND $rows AS r MATCH (a:Account {id: r.account}) "
         "MERGE (d:Device {id: r.device}) ON CREATE SET d.fingerprint = r.fingerprint "
         "MERGE (a)-[:USED_DEVICE]->(d) RETURN count(*) AS row",
@@ -342,7 +316,7 @@ def seed(reset: bool = True, verbose: bool = True) -> dict:
 
     # --- transactions -----------------------------------------------------------
     transfers = _make_normal_transfers(normal_ids) + _ring_transactions()
-    _batch(
+    db.insert_rows(
         "UNWIND $rows AS r MATCH (a:Account {id: r.from}), (b:Account {id: r.to}) "
         "MERGE (t:Transaction {id: r.id}) "
         "ON CREATE SET t.amount = r.amount, t.currency = 'INR', t.timestamp = r.ts, "
@@ -353,7 +327,7 @@ def seed(reset: bool = True, verbose: bool = True) -> dict:
     )
 
     payments = _make_merchant_payments(normal_ids) + _ring_merchant_payments()
-    _batch(
+    db.insert_rows(
         "UNWIND $rows AS r MATCH (a:Account {id: r.account}), (m:Merchant {id: r.merchant}) "
         "MERGE (t:Transaction {id: r.id}) "
         "ON CREATE SET t.amount = r.amount, t.currency = 'INR', t.timestamp = r.ts, "
@@ -364,7 +338,7 @@ def seed(reset: bool = True, verbose: bool = True) -> dict:
     )
 
     # --- alerts -----------------------------------------------------------------
-    _batch(
+    db.insert_rows(
         "UNWIND $rows AS r MATCH (a:Account {id: r.account}) "
         "MERGE (al:Alert {id: r.id}) "
         "ON CREATE SET al.rule = r.rule, al.severity = r.severity, al.created_at = r.ts, "

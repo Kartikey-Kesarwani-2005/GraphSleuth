@@ -242,6 +242,18 @@ function draw() {
   }
   ctx.setLineDash([]);
 
+  // label the relationships touching the hovered node, so judges can read the graph
+  if (highlight) {
+    ctx.font = "9.5px 'Segoe UI', sans-serif";
+    for (const e of edges) {
+      if (e.from !== highlight.id && e.to !== highlight.id) continue;
+      const a = fmap.get(e.from), b = fmap.get(e.to);
+      if (!a || !b) continue;
+      ctx.fillStyle = "rgba(219,228,245,0.8)";
+      ctx.fillText(String(e.type), (a.x + b.x) / 2, (a.y + b.y) / 2 - 4);
+    }
+  }
+
   ctx.font = "10px 'Segoe UI', sans-serif";
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   for (const nd of nodes.values()) {
@@ -249,6 +261,13 @@ function draw() {
     const isRemoved = removed && nd.id === removed;
     const r = isFocal ? 11 : nd.kind === "ring" || ring.has(nd.id) ? 8 : 6;
     const dim = (active && !active.has(nd.id)) || isRemoved;
+    if (isFocal && !isRemoved) {
+      const glow = ctx.createRadialGradient(nd.x, nd.y, r, nd.x, nd.y, r * 3.4);
+      glow.addColorStop(0, "rgba(255,92,122,0.34)");
+      glow.addColorStop(1, "rgba(255,92,122,0)");
+      ctx.fillStyle = glow;
+      ctx.beginPath(); ctx.arc(nd.x, nd.y, r * 3.4, 0, Math.PI * 2); ctx.fill();
+    }
     ctx.beginPath();
     ctx.arc(nd.x, nd.y, r, 0, Math.PI * 2);
     ctx.fillStyle = isRemoved ? "rgba(60,70,95,0.25)" : dim ? "rgba(90,105,135,0.35)" : color(nd);
@@ -270,6 +289,17 @@ function draw() {
     }
   }
   ctx.restore();
+  updateStats();
+}
+
+/* Canvas overlay: how much of the graph the agent has pulled in so far. */
+let statsKey = "";
+function updateStats() {
+  const key = nodes.size + "/" + edges.size;
+  if (key === statsKey) return;
+  statsKey = key;
+  const el = $("graphstats");
+  if (el) el.textContent = nodes.size ? `${nodes.size} nodes · ${edges.size} relationships` : "";
 }
 
 function neighbours(id) {
@@ -353,8 +383,11 @@ async function runStressTest(entityId) {
         ? `${r.cluster.top_before.size} → ${r.cluster.top_after.size} members (score ${r.cluster.top_before.score} → ${r.cluster.top_after.score})`
         : "—"],
     ];
+    const width = Math.max(0, Math.min(100, Number(rob) || 0));
+    const meter = `<div class="meter" title="robustness ${esc(String(rob))}/100"><i style="width:${width}%"></i></div>` +
+      `<p class="muted">robustness ${esc(String(rob))}/100 — how much of the conclusion survives the removal</p>`;
     $("stressbody").innerHTML =
-      `<p>${esc(r.conclusion || "")}</p>` +
+      `<p>${esc(r.conclusion || "")}</p>` + meter +
       `<table class="stress-table">${rows.map(([k, v]) =>
         `<tr><td>${esc(k)}</td><td>${esc(String(v))}</td></tr>`).join("")}</table>` +
       `<p class="muted">${esc(r.note || "")}</p>`;
@@ -440,26 +473,34 @@ async function investigate(target, tenant, offline, mode, question) {
 
   const payload = { target: target || question || focal, tenant: tenant || (mode === "company" ? "company" : "default"), offline, mode };
   if (mode === "company" && question) payload.question = question;
-  const res = await fetch("/api/investigate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  const reader = res.body.getReader();
-  const dec = new TextDecoder();
-  let buf = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let nl;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (line) handle(JSON.parse(line));
+  const btn = document.querySelector("#controls button");
+  const btnLabel = btn.textContent;
+  btn.classList.add("busy");
+  try {
+    const res = await fetch("/api/investigate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line) handle(JSON.parse(line));
+      }
     }
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove("busy");
+    btn.textContent = btnLabel;
   }
-  document.querySelector("#controls button").disabled = false;
 }
 
 function handle(ev) {
@@ -493,7 +534,10 @@ function handle(ev) {
 }
 
 function renderVerdict(ev) {
-  const parts = [`<h3>Verdict <span class="muted">· ${ev.rounds} rounds · ${esc(ev.brain)}</span></h3>`, md(ev.answer || "")];
+  const parts = [
+    `<h3>Verdict <span class="pill">${ev.rounds} rounds</span> <span class="pill">${esc(ev.brain)}</span></h3>`,
+    md(ev.answer || ""),
+  ];
   if (ev.actions && ev.actions.length) {
     parts.push(`<p class="muted">Verified actions: ${ev.actions.map((a) => `<code>${esc(a)}</code>`).join(" ")}</p>`);
   }
@@ -586,7 +630,7 @@ function buildProofPack() {
 <p class="meta">Target <code>${esc($("target").value || "-")}</code> · Tenant <code>${esc($("tenant").value || "-")}</code>
  · Mode ${$("mode").value === "company" ? "Company Brain" : "Fraud investigation"}
  · ${new Date().toISOString()} · Rounds ${ev.rounds ?? "-"} · Brain ${esc(ev.brain || "-")}</p>
-<p><span class="badge">MCP toolbelt: 30 tools</span><span class="badge">Offline tests: 31/31</span>
+<p><span class="badge">MCP toolbelt: 30 tools</span><span class="badge">Offline tests: 32/32</span>
 <span class="badge">Eval: 11/11</span><span class="badge">Read-only counterfactual</span></p>
 
 <h2>Verdict</h2>
@@ -646,8 +690,12 @@ function md(text) {
   let html = "", inList = false;
   for (const raw of lines) {
     const line = raw.trim();
+    const section = line.match(/^\*\*([^*]+)\*\*$/);   // a bold line on its own = a section header
     const m = line.match(/^[-*]\s+(.*)$/);
-    if (m) {
+    if (section) {
+      if (inList) { html += "</ul>"; inList = false; }
+      html += `<h4 class="sect">${inline(section[1])}</h4>`;
+    } else if (m) {
       if (!inList) { html += "<ul>"; inList = true; }
       html += `<li>${inline(m[1])}</li>`;
     } else {
@@ -679,12 +727,19 @@ function applyMode() {
   $("tenant").value = company ? "company" : "default";
   document.querySelector("#controls button").textContent = company ? "Ask the Company Brain" : "Investigate";
   const q = $("question");
-  if (q) {
-    q.classList.toggle("hidden", !company);
+  const wrap = $("questionwrap");
+  if (q && wrap) {
+    wrap.classList.toggle("hidden", !company);
     if (!company) q.value = "";
   }
 }
 $("mode").addEventListener("change", applyMode);
+
+/* quick-start chips: click to load an example target */
+document.querySelectorAll(".chipbtn").forEach((b) => b.addEventListener("click", () => {
+  $("target").value = b.dataset.target || "";
+  $("target").focus();
+}));
 
 $("controls").addEventListener("submit", (e) => {
   e.preventDefault();

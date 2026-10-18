@@ -495,6 +495,48 @@ def detect_suspicious_cluster(min_signals: int = 2, top: int = 5) -> dict:
     return _detect_cluster(min_signals, top)
 
 
+def _cluster_members(cluster: dict | None) -> list[str]:
+    """Sorted, deduplicated member account ids of a detected cluster."""
+    return sorted(
+        {
+            str(member.get("account"))
+            for member in ((cluster or {}).get("members") or [])
+            if member.get("account")
+        }
+    )
+
+
+def _pick_cluster(
+    ring_key: str,
+    min_signals: int,
+    top: int,
+    empty_note: str = "no cluster with enough signals at this threshold",
+) -> tuple[dict | None, list[dict], str]:
+    """Resolve which cluster a `ring_*` tool should inspect (and run the detector).
+
+    `ring_key` accepts ``"top"`` (default), a 1-based cluster index, or any member
+    account id. Returns ``(target, clusters, error)`` where ``error`` is empty on
+    success — one line for callers:
+
+        target, clusters, error = _pick_cluster(ring_key, min_signals, top, "...")
+    """
+    clusters = list(
+        _detect_cluster(max(1, int(min_signals)), max(1, int(top))).get("clusters") or []
+    )
+    if not clusters:
+        return None, [], empty_note
+    key = str(ring_key or "top").strip()
+    if key.isdigit():
+        index = min(int(key), len(clusters)) - 1
+        return clusters[max(0, index)], clusters, ""
+    if key != "top":
+        for cluster in clusters:
+            if key in {str(m.get("account")) for m in cluster.get("members", [])}:
+                return cluster, clusters, ""
+        return None, clusters, f"'{key}' is not a member of any detected cluster"
+    return clusters[0], clusters, ""
+
+
 def _bfs_path(
     id_a: str,
     id_b: str,
@@ -681,7 +723,9 @@ def what_if_removed(entity_id: str, from_id: str = "", to_id: str = "", max_dept
     cluster = {
         "top_before": {"size": top_before["size"], "score": top_before["cluster_score"]} if top_before else None,
         "top_after": {"size": top_after["size"], "score": top_after["cluster_score"]} if top_after else None,
-        "members_dropped": sorted(_top_members(top_before) - _top_members(top_after)),
+        "members_dropped": sorted(
+            set(_cluster_members(top_before)) - set(_cluster_members(top_after))
+        ),
     }
 
     # --- 3. path: does a requested chain still exist without this node? ---
@@ -850,10 +894,6 @@ def _robustness_metrics(
     }
 
 
-def _top_members(cluster: dict | None) -> set[str]:
-    return {str(m.get("account")) for m in ((cluster or {}).get("members") or [])}
-
-
 def assess_ring_resilience(
     ring_key: str = "top",
     min_signals: int = 2,
@@ -879,38 +919,21 @@ def assess_ring_resilience(
     the graph-theory answer to "where is this network actually vulnerable?".
     Read-only; safe to run after every investigation.
     """
-    min_signals = max(1, int(min_signals))
-    top = max(1, int(top))
     depth = max(1, min(int(depth), 4))
-    ring_key = str(ring_key or "top").strip()
-
-    detected = _detect_cluster(min_signals, top)
-    clusters = detected.get("clusters") or []
-    if not clusters:
+    target_cluster, _, error = _pick_cluster(
+        ring_key,
+        min_signals,
+        top,
+        "no cluster with enough signals — nothing to stress-test",
+    )
+    if error:
         return {
             "found_ring": False,
-            "note": "no cluster with enough signals — nothing to stress-test",
+            "note": error,
             "algorithm": "batch counterfactual over the top cluster",
         }
 
-    if ring_key.isdigit():
-        index = min(int(ring_key), len(clusters)) - 1
-        target_cluster = clusters[max(0, index)]
-    elif ring_key != "top":
-        target_cluster = next(
-            (
-                cluster
-                for cluster in clusters
-                if ring_key in {str(m.get("account")) for m in cluster.get("members", [])}
-            ),
-            clusters[0],
-        )
-    else:
-        target_cluster = clusters[0]
-
-    members = sorted(
-        {str(m.get("account")) for m in target_cluster.get("members", []) if m.get("account")}
-    )[:12]
+    members = _cluster_members(target_cluster)[:12]
     if not members:
         return {
             "found_ring": False,
@@ -1101,32 +1124,16 @@ def find_similar_rings(
     the playbook from innocent coincidences (a bare shared device with no collector,
     no alerts and low risk). Read-only.
     """
-    min_signals = max(1, int(min_signals))
     top = max(2, int(top))
     limit = max(1, min(int(limit), 6))
-    ring_key = str(ring_key or "top").strip()
-
-    detected = _detect_cluster(min_signals, top)
-    clusters = list(detected.get("clusters") or [])
-    if not clusters:
-        return {
-            "found": False,
-            "note": "no candidate groups at this threshold — nothing to compare against",
-        }
-
-    if ring_key.isdigit():
-        index = min(int(ring_key), len(clusters)) - 1
-        target = clusters[max(0, index)]
-    elif ring_key != "top":
-        target = next(
-            (
-                c for c in clusters
-                if ring_key in {str(m.get("account")) for m in c.get("members", [])}
-            ),
-            clusters[0],
-        )
-    else:
-        target = clusters[0]
+    target, clusters, error = _pick_cluster(
+        ring_key,
+        min_signals,
+        top,
+        "no candidate groups at this threshold — nothing to compare against",
+    )
+    if error:
+        return {"found": False, "note": error}
 
     target_profile = _cluster_profile(target)
     target_members = set(target_profile["members"])
@@ -1255,32 +1262,14 @@ def ring_timeline(
     the "narrative timeline" judges can verify against the raw rows. Read-only.
     """
     min_signals = max(1, int(min_signals))
-    top = max(1, int(top))
     limit = max(5, min(int(limit), 60))
-    ring_key = str(ring_key or "top").strip()
-
-    detected = _detect_cluster(min_signals, top)
-    clusters = list(detected.get("clusters") or [])
-    if not clusters:
-        return {"found": False, "note": "no cluster at this threshold — no timeline to build"}
-
-    if ring_key.isdigit():
-        index = min(int(ring_key), len(clusters)) - 1
-        target = clusters[max(0, index)]
-    elif ring_key != "top":
-        target = next(
-            (
-                c for c in clusters
-                if ring_key in {str(m.get("account")) for m in c.get("members", [])}
-            ),
-            clusters[0],
-        )
-    else:
-        target = clusters[0]
-
-    members = sorted(
-        {str(m.get("account")) for m in target.get("members", []) if m.get("account")}
+    target, _, error = _pick_cluster(
+        ring_key, min_signals, top, "no cluster at this threshold — no timeline to build"
     )
+    if error:
+        return {"found": False, "note": error}
+
+    members = _cluster_members(target)
     if not members:
         return {"found": False, "note": "top cluster has no member accounts"}
 
@@ -1545,6 +1534,30 @@ def _ranked_rows(rows: list[Any], label: str, top: int, score_index: int = 1) ->
     return entries[:top]
 
 
+def _ranked_result(algorithm: str, engine: str, label: str, rows: list[Any], top: int) -> dict:
+    """The common result shape of every node-ranking algorithm tool."""
+    return {
+        "algorithm": algorithm,
+        "engine": engine,
+        "label": label or "any",
+        "nodes_ranked": len(rows),
+        "top": _ranked_rows(rows, label, top),
+    }
+
+
+def _group_result(rows: list[Any], top: int, min_size: int) -> tuple[int, list[dict]]:
+    """Shape `[members]` rows from a grouping algorithm (WCC / label propagation).
+
+    Returns `(groups_found, top_n)` — the total number of groups at this size
+    threshold, and the largest `top_n` shaped for the tool result.
+    """
+    groups = [sorted(str(member) for member in row) for row in rows if isinstance(row, list)]
+    groups = [group for group in groups if len(group) >= max(1, int(min_size))]
+    groups.sort(key=len, reverse=True)
+    shaped = [{"size": len(group), "members": group[:25]} for group in groups[: max(1, int(top))]]
+    return len(groups), shaped
+
+
 _LABEL_CACHE: dict[str, set[str]] = {}
 _LABEL_LOCK = threading.Lock()
 
@@ -1585,13 +1598,7 @@ def page_rank(top: int = 10, label: str = "") -> dict:
     except Exception:
         rows = []
     if rows:
-        return {
-            "algorithm": "pagerank",
-            "engine": engine,
-            "label": label or "any",
-            "nodes_ranked": len(rows),
-            "top": _ranked_rows(rows, label, top),
-        }
+        return _ranked_result("pagerank", engine, label, rows, top)
 
     return {
         "algorithm": "pagerank",
@@ -1653,16 +1660,11 @@ def connected_components(top: int = 8, min_size: int = 2) -> dict:
         "WITH componentId, collect(coalesce(node.id, node.name)) AS members "
         "RETURN members AS row"
     )
-    groups = [sorted(str(member) for member in row) for row in rows if isinstance(row, list)]
-    groups = [group for group in groups if len(group) >= max(1, int(min_size))]
-    groups.sort(key=len, reverse=True)
-    top_groups = [
-        {"size": len(group), "members": group[:25]} for group in groups[: max(1, int(top))]
-    ]
+    found, top_groups = _group_result(rows, top, min_size)
     return {
         "algorithm": "wcc (weakly connected components)",
         "engine": "falkordb:algo.WCC",
-        "components_found": len(groups),
+        "components_found": found,
         "components": top_groups,
     }
 
@@ -1674,16 +1676,11 @@ def community_detection(top: int = 8, min_size: int = 2) -> dict:
         "WITH communityId, collect(coalesce(node.id, node.name)) AS members "
         "RETURN members AS row"
     )
-    groups = [sorted(str(member) for member in row) for row in rows if isinstance(row, list)]
-    groups = [group for group in groups if len(group) >= max(1, int(min_size))]
-    groups.sort(key=len, reverse=True)
-    top_groups = [
-        {"size": len(group), "members": group[:25]} for group in groups[: max(1, int(top))]
-    ]
+    found, top_groups = _group_result(rows, top, min_size)
     return {
         "algorithm": "label propagation",
         "engine": "falkordb:algo.labelPropagation",
-        "communities_found": len(groups),
+        "communities_found": found,
         "communities": top_groups,
     }
 
@@ -1720,13 +1717,7 @@ def centrality(kind: str = "betweenness", top: int = 10, label: str = "") -> dic
                 "RETURN [coalesce(node.id, node.name), score] AS row"
             )
             engine = "falkordb:algo.betweenness (default sampling)"
-    return {
-        "algorithm": kind,
-        "engine": engine,
-        "label": label or "any",
-        "nodes_ranked": len(rows),
-        "top": _ranked_rows(rows, label, top),
-    }
+    return _ranked_result(kind, engine, label, rows, top)
 
 
 def list_alerts(status: str = "", severity: str = "", limit: int = 10) -> dict:
