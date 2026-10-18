@@ -52,17 +52,17 @@ typed relationships, never flat rows.
   relationship types, a compact graph path, the tools used, the actions taken, and a confidence
   rating with what is still missing. A zero-dependency **web console** (`python -m graphsleuth serve`)
   streams each tool call live and grows the graph as the agent works.
-* **Tool selection through MCP** — the same 26 tools (20 fraud + 6 company-brain) are served over
+* **Tool selection through MCP** — the same 28 tools (22 fraud + 6 company-brain) are served over
   MCP stdio
   (`python -m graphsleuth.mcp_server`), so Claude Desktop or any MCP client gets the identical
-  graph toolbelt (verified: initialize → 26 tools → live calls; an offline test asserts the MCP
+  graph toolbelt (verified: initialize → 28 tools → live calls; an offline test asserts the MCP
   parameters match the built-in toolbelt exactly).
 
 **Measured on the judges' own terms (verified live, not aspirational):** seed 1702 nodes / 2713
-relationships; demo 11/11 tool calls ok; ring score 41.05 with 6 members; 6-hop money path from
+relationships; demo 13/13 tool calls ok; ring score 41.05 with 6 members; 6-hop money path from
 `ACC-EXT-01` to the collector `ACC-9100`; pipeline handoff created → accepted and case opened;
 `eval` 11/11 checks pass; 20-thread concurrency bench 2307 ops in 4 s (575 ops/s, reads p95 71 ms,
-writes p95 82 ms, 0 errors); MCP client sees all 26 tools; 27/27 offline tests pass. Run
+writes p95 82 ms, 0 errors); MCP client sees all 28 tools; 29/29 offline tests pass. Run
 `python -m graphsleuth eval` to reproduce the scorecard yourself.
 
 **Honest engineering notes:** FalkorDB's `ORDER BY` needed the `WITH … ORDER BY … LIMIT … RETURN`
@@ -83,7 +83,11 @@ takes over the loop. Repo: https://github.com/Kartikey-Kesarwani-2005/GraphSleut
 ## Track choice
 
 Enter primarily in **Track 01 — Agents That Act on Connected Data** (multi-hop reasoning, graph
-queries/algorithms as tools, tool selection through MCP, explainable results). It also covers
+queries/algorithms as tools, tool selection through MCP, explainable results). Explainability goes
+beyond "here is the path": `what_if_removed` re-runs the analysis with a node deleted (robustness
+0–100, load-bearing score) and `assess_ring_resilience` stress-tests the whole ring at once,
+naming the articulation points — the verifier refuses `CONFIRMED` if the case is a single point of
+failure. It also covers
 Track 02 (episodic/semantic/procedural memory, playbook learning, handoffs between agents — plus an
 adversarial verifier agent, high-concurrency reads/writes, per-tenant memory) and Track 03 as a
 dedicated second graph: `python -m graphsleuth company` (people, teams, projects, systems, docs,

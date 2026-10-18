@@ -96,7 +96,7 @@ class GraphSleuth:
         self._scripted = scripted
         self._model = model
         self._on_event = on_event
-        # The fraud agent gets the 20 fraud tools; a company agent passes its own
+        # The fraud agent gets the 22 fraud tools; a company agent passes its own
         # subset (see company.COMPANY_TOOL_SPECS). Same loop either way.
         self.tool_specs = tool_specs if tool_specs is not None else TOOL_SPECS
 
@@ -404,6 +404,12 @@ def build_demo_brain(target: str = "ACC-9003", handoff: bool = False) -> Scripte
             },
         ),
         (
+            # Whole-ring batch counterfactual: rank every member by how load-bearing
+            # it is and name the articulation points (read-only).
+            "assess_ring_resilience",
+            {"ring_key": "top"},
+        ),
+        (
             "open_case",
             lambda history: {
                 "title": f"Mule ring around {target}",
@@ -536,6 +542,20 @@ def compose_final(question: str, history: list[dict]) -> str:
         lines.append("")
         lines.append("**Counterfactual check**")
         lines.append(str(counter["conclusion"]))
+
+    resilience = _last(history, "assess_ring_resilience") or {}
+    if resilience.get("summary"):
+        lines.append("")
+        lines.append("**Ring resilience**")
+        lines.append(str(resilience["summary"]))
+        arts = resilience.get("articulation_points") or []
+        if arts:
+            lines.append("")
+            lines.append(
+                "**Disruption guidance** — the ring's structural bottlenecks are "
+                + ", ".join(str(a) for a in arts)
+                + "; containing them first breaks the flow fastest."
+            )
 
     lines.append("")
     lines.append("**Members flagged by the clustering algorithm**")

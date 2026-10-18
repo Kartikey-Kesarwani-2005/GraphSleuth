@@ -53,7 +53,7 @@ EVIDENCE TRAIL
 
 > **Note.** This run finished in three tool calls because the smaller `20b` model answered sooner
 > than `120b` usually does; the *mechanism* on display is the fallback, not the reasoning depth. A
-> fuller live transcript (11 tool calls, end-to-end money path and cluster score) is in
+> fuller live transcript (13 tool calls, end-to-end money path and cluster score) is in
 > [`LIVE_RUN.md`](LIVE_RUN.md). Any model here would produce a different tool count — that is the
 > point: the agent decides, the graph answers.
 

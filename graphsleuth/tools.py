@@ -854,6 +854,159 @@ def _top_members(cluster: dict | None) -> set[str]:
     return {str(m.get("account")) for m in ((cluster or {}).get("members") or [])}
 
 
+def assess_ring_resilience(
+    ring_key: str = "top",
+    min_signals: int = 2,
+    top: int = 5,
+    depth: int = 2,
+    from_id: str = "ACC-EXT-01",
+    to_id: str = "ACC-9100",
+) -> dict:
+    """Batch counterfactual: stress-test **every** member of the suspected ring.
+
+    For each member the same checks `what_if_removed` runs are repeated (cluster,
+    bridge, money trail), and the members are ranked by how load-bearing they are.
+    The result is a *resilience verdict* for the whole ring:
+
+    - ``resilient``          — no single member is a bottleneck (the ring survives
+                               losing any one account/device),
+    - ``mostly_resilient``   — one weak link, the ring largely survives,
+    - ``bottlenecked``       — ≥1 articulation points: remove them and the money
+                               trail or the ring itself collapses,
+    - ``fragile``             — several members are load-bearing.
+
+    `articulation_points` lists the members whose removal breaks the conclusion —
+    the graph-theory answer to "where is this network actually vulnerable?".
+    Read-only; safe to run after every investigation.
+    """
+    min_signals = max(1, int(min_signals))
+    top = max(1, int(top))
+    depth = max(1, min(int(depth), 4))
+    ring_key = str(ring_key or "top").strip()
+
+    detected = _detect_cluster(min_signals, top)
+    clusters = detected.get("clusters") or []
+    if not clusters:
+        return {
+            "found_ring": False,
+            "note": "no cluster with enough signals — nothing to stress-test",
+            "algorithm": "batch counterfactual over the top cluster",
+        }
+
+    if ring_key.isdigit():
+        index = min(int(ring_key), len(clusters)) - 1
+        target_cluster = clusters[max(0, index)]
+    elif ring_key != "top":
+        target_cluster = next(
+            (
+                cluster
+                for cluster in clusters
+                if ring_key in {str(m.get("account")) for m in cluster.get("members", [])}
+            ),
+            clusters[0],
+        )
+    else:
+        target_cluster = clusters[0]
+
+    members = sorted(
+        {str(m.get("account")) for m in target_cluster.get("members", []) if m.get("account")}
+    )[:12]
+    if not members:
+        return {
+            "found_ring": False,
+            "note": "top cluster has no member accounts to test",
+            "algorithm": "batch counterfactual over the top cluster",
+        }
+
+    rows: list[dict] = []
+    articulations: list[str] = []
+    total_before = target_cluster.get("size") or len(members)
+    score_before = target_cluster.get("cluster_score") or 0
+
+    for member in members:
+        probe = what_if_removed(
+            member, from_id=from_id, to_id=to_id, max_depth=depth + 2
+        )
+        if probe.get("error") or probe.get("found") is False:
+            rows.append({"entity": member, "skipped": True})
+            continue
+        path = probe.get("path") or {}
+        bridge = probe.get("bridge") or {}
+        cluster = probe.get("cluster") or {}
+        after = cluster.get("top_after") or {}
+        members_lost = after.get("size") is not None and total_before - after["size"] >= 2
+        money_breaks = bool(path.get("money_before")) and not bool(path.get("money_after"))
+        any_breaks = bool(path.get("connected_before")) and not bool(path.get("connected_after"))
+        is_articulation = bool(money_breaks or any_breaks or (after.get("size") == 0))
+        rows.append(
+            {
+                "entity": member,
+                "impact": probe.get("impact"),
+                "robustness": probe.get("robustness"),
+                "verdict": probe.get("verdict"),
+                "load_bearing_score": probe.get("load_bearing_score"),
+                "money_trail_breaks": money_breaks,
+                "any_trail_breaks": any_breaks,
+                "ring_loses_2plus": bool(members_lost),
+                "cluster_size_after": after.get("size"),
+                "cluster_score_after": after.get("score"),
+                "is_articulation": is_articulation,
+            }
+        )
+        if is_articulation:
+            articulations.append(member)
+
+    scored = [r for r in rows if not r.get("skipped")]
+    mean_robustness = (
+        round(sum(r.get("robustness") or 0 for r in scored) / len(scored))
+        if scored
+        else 0
+    )
+    mean_load_bearing = (
+        round(sum(r.get("load_bearing_score") or 0 for r in scored) / len(scored), 3)
+        if scored
+        else 0.0
+    )
+
+    if not scored:
+        verdict = "untestable"
+    elif not articulations and mean_robustness >= 90:
+        verdict = "resilient"
+    elif not articulations and mean_robustness >= 75:
+        verdict = "mostly_resilient"
+    elif 1 <= len(articulations) <= 2:
+        verdict = "bottlenecked"
+    else:
+        verdict = "fragile"
+
+    rows.sort(key=lambda row: (row.get("is_articulation") is not True, row.get("robustness") or 0))
+
+    summary = (
+        f"Ring of {len(scored)} member(s) is {verdict}: "
+        f"mean robustness {mean_robustness}/100, mean load-bearing {mean_load_bearing}. "
+        + (
+            f"Articulation points (remove these and the case collapses): {', '.join(articulations)}."
+            if articulations
+            else "No single member is load-bearing — the ring survives losing any one of them."
+        )
+    )
+
+    return {
+        "found_ring": True,
+        "ring": sorted(members),
+        "cluster_size_before": total_before,
+        "cluster_score_before": score_before,
+        "endpoints": {"from": from_id, "to": to_id},
+        "members": rows,
+        "articulation_points": articulations,
+        "resilience": verdict,
+        "mean_robustness": mean_robustness,
+        "mean_load_bearing_score": mean_load_bearing,
+        "summary": summary,
+        "note": "read-only batch counterfactual — the graph was NOT modified.",
+    }
+
+
 
 
 
@@ -1512,6 +1665,7 @@ HANDLERS: dict[str, Callable[..., dict]] = {
     "detect_suspicious_cluster": detect_suspicious_cluster,
     "shortest_connection": shortest_connection,
     "what_if_removed": what_if_removed,
+    "assess_ring_resilience": assess_ring_resilience,
     "page_rank": page_rank,
     "connected_components": connected_components,
     "community_detection": community_detection,
@@ -1636,6 +1790,22 @@ TOOL_SPECS: list[dict] = [
             "max_depth": {"type": "integer", "description": "hops for the chain check, default 6"},
         },
         ["entity_id"],
+    ),
+    _spec(
+        "assess_ring_resilience",
+        "Batch counterfactual: stress-test every member of the suspected ring at once and rank "
+        "them by how load-bearing they are. Returns per-member robustness, the articulation "
+        "points (remove those and the case collapses) and a resilience verdict for the whole "
+        "ring: resilient / mostly_resilient / bottlenecked / fragile. Read-only.",
+        {
+            "ring_key": {"type": "string", "description": "'top' (default) or a member account id to locate its cluster"},
+            "min_signals": {"type": "integer", "description": "cluster sensitivity, default 2"},
+            "top": {"type": "integer", "description": "cluster selection size, default 5"},
+            "depth": {"type": "integer", "description": "reach depth for each probe, default 2, max 4"},
+            "from_id": {"type": "string", "description": "chain start for the money-trail probe, default 'ACC-EXT-01'"},
+            "to_id": {"type": "string", "description": "chain end for the money-trail probe, default 'ACC-9100'"},
+        },
+        [],
     ),
     _spec(
         "page_rank",

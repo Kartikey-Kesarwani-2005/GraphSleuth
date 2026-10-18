@@ -83,6 +83,12 @@ function ingest(tool, r) {
     const mp = ((r.path || {}).money_path_before) || [];
     mp.forEach((s) => addNode(String(s.node)));
     for (let i = 0; i < mp.length - 1; i++) addEdge(String(mp[i].node), String(mp[i + 1].node), String(mp[i + 1].via));
+  } else if (tool === "assess_ring_resilience") {
+    (r.members || []).forEach((m) => {
+      if (!m.entity) return;
+      addNode(String(m.entity), (m.is_articulation ? "⚠ " : "") + String(m.entity).split("-")[0] + (m.robustness != null ? ` [${m.robustness}/100]` : ""));
+      if (m.is_articulation) ring.add(String(m.entity));
+    });
   } else if (tool === "who_knows") {
     addNode(r.system, "System");
     (r.people || []).forEach((p) => { addNode(p.person, "Person"); addEdge(p.person, r.system, "WORKED_ON"); });

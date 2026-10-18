@@ -16,9 +16,9 @@ from graphsleuth.agent import compose_final  # noqa: E402
 
 
 def test_tool_specs_are_openai_shaped() -> None:
-    assert len(tools.TOOL_SPECS) == 21  # the fraud-investigation toolbelt
+    assert len(tools.TOOL_SPECS) == 22  # the fraud-investigation toolbelt
     assert len(tools.COMPANY_TOOL_SPECS) == 6  # Track 03 company-brain tools
-    assert len(tools.ALL_TOOL_SPECS) == 27  # everything the agents/MCP can call
+    assert len(tools.ALL_TOOL_SPECS) == 28  # everything the agents/MCP can call
     for spec in tools.ALL_TOOL_SPECS:
         function = spec["function"]
         assert spec["type"] == "function"
@@ -69,6 +69,33 @@ def test_counterfactual_tool_is_registered_and_read_only() -> None:
     #  finds nothing, so here we only assert the guard for an empty id)
     result = tools.what_if_removed("")
     assert "error" in result
+
+
+def test_ring_resilience_tool_is_registered_and_read_only() -> None:
+    """The batch counterfactual (whole-ring stress test) must be part of the toolbelt,
+    read-only, and its MCP/handler/spec signatures must stay in sync — it is what turns
+    single-node explainability into a full resilience verdict (articulation points)."""
+    import inspect
+
+    assert "assess_ring_resilience" in tools.HANDLERS
+    assert "assess_ring_resilience" in {s["function"]["name"] for s in tools.ALL_TOOL_SPECS}
+    assert "assess_ring_resilience" not in tools.MUTATING_TOOLS
+
+    spec = next(
+        s for s in tools.ALL_TOOL_SPECS if s["function"]["name"] == "assess_ring_resilience"
+    )
+    params = set(spec["function"]["parameters"]["properties"])
+    sig = set(inspect.signature(tools.assess_ring_resilience).parameters)
+    assert sig == params
+
+    try:
+        mcp_server = __import__("importlib").import_module("graphsleuth.mcp_server")
+    except (ImportError, SystemExit):
+        return
+    mcp_params = set(
+        inspect.signature(getattr(mcp_server, "assess_ring_resilience")).parameters
+    )
+    assert mcp_params == params  # MCP clients see the exact same tool
 
 
 def test_multigraph_one_graph_per_tenant() -> None:

@@ -27,7 +27,7 @@ If CLI crashes on LLM output with `UnicodeEncodeError`:
 
 ## MCP stdio
 - Run: `python -m graphsleuth.mcp_server` (reads from stdin/stdout)
-- 26 tools total (20 fraud + 6 company). Verify with any MCP client.
+- 28 tools total (22 fraud + 6 company). Verify with any MCP client.
 - Tenant via `GRAPHSLEUTH_TENANT` env var.
 
 ## Tests

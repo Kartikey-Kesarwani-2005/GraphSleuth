@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml/badge.svg)](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-28%20passing-brightgreen)
-![MCP](https://img.shields.io/badge/MCP-27%20tools-8A2BE2)
+![Tests](https://img.shields.io/badge/tests-29%20passing-brightgreen)
+![MCP](https://img.shields.io/badge/MCP-28%20tools-8A2BE2)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 **A fraud investigation agent whose context layer is FalkorDB.**
@@ -42,7 +42,7 @@ and it can prove every hop with the tool call that produced it.
   question ───▶ │  GraphSleuth agent loop                        │
                 │  memory briefing ─▶ LLM ─▶ tool call ─▶ result │
                 └───────────────────────┬────────────────────────┘
-                                        │ 26 tools
+                                        │ 28 tools
                     ┌───────────────────┴────────────────────┐
                     ▼                                        ▼
         read tools (reason over the graph)      write tools (act on the graph)
@@ -382,6 +382,33 @@ instead of failing silently.
 
 ---
 
+## Counterfactual explainability (the part nobody else has)
+
+Most "explainable agent" projects show the path the agent walked. GraphSleuth goes one step
+further and **proves the verdict does not depend on a single link** — by removing nodes from the
+graph (mentally, read-only) and re-running the same analysis:
+
+| Tool | What it answers | Verified output (demo graph) |
+|---|---|---|
+| `what_if_removed(entity, from, to)` | "If this device/account didn't exist, would the case still hold?" | Removing `DEV-9001` → `impact=minor, robustness=100/100` (the money trail and the ring both survive). Removing `ACC-9001` → `impact=critical, robustness=0/100` (every chain runs through it). |
+| `assess_ring_resilience(ring_key)` | "Where is this whole network actually vulnerable?" | `resilience=bottlenecked`: mean robustness 67/100, articulation points `ACC-9001, ACC-9100` — remove those and the case collapses. |
+
+Both tools are **read-only** (the graph is never modified), reuse the *same* union-find/BFS
+implementations as the investigative tools (so the counterfactual can't drift from the analysis),
+and return quantitative verdicts:
+
+* `robustness` (0–100) — how much of the conclusion survives the removal,
+* `load_bearing_score` (0–1) — how much the conclusion leans on exactly this node,
+* `articulation_points` — the graph-theory answer to "where do we intervene first".
+
+The demo, the pipeline's adversarial **verifier** agent, the offline verdict and the web console
+all surface this: the verifier will not say `CONFIRMED` if the verdict is a single point of
+failure, and the final report prints a **Disruption guidance** line naming the bottlenecks.
+That is "explainable results" with a falsifiable claim attached — anyone can re-run the removal
+and check the numbers themselves.
+
+---
+
 ## Two agents, one graph (Track 02)
 
 ```powershell
@@ -521,7 +548,7 @@ $ python -m graphsleuth demo --target ACC-9003 --save demos/EXAMPLE_REPORT.md
   [7] shortest_connection(ACC-EXT-01 -> ACC-9100, via=[ORIGINATED, DESTINED])
       -> connected=True, hops=6
   [8-11] open_case, add_case_note, flag_account, remember
-  all 11 tool calls [ok]
+  all 13 tool calls [ok]
 ```
 
 Selected output (copied from the report):
@@ -540,7 +567,7 @@ Selected output (copied from the report):
   **Actions taken (verified from the tool log)** section lists exactly these — from the trace.
 * **Cross-session memory:** running `demo` a second time, step 1's `recall` returns the first run's
   own conclusion — proof that state lives in the graph, not the process.
-* **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 26 tools and
+* **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 28 tools and
   gets live graph data back (`tools: 26`; live `entity_search` + `detect_suspicious_cluster` calls).
 * **Tests:** `tests/test_offline.py` → 27/27 pass (no database required; includes an MCP/agent
   toolbelt parity check and company-brain tests); `compileall` clean. CI runs the suite and a real
@@ -573,7 +600,7 @@ GraphSleuth/
 │  ├─ db.py            # the only module that talks to FalkorDB (multigraph tenancy)
 │  ├─ seed.py          # synthetic fraud network + baseline memory
 │  ├─ company.py       # Track 03: company-brain graph, tour + agent (`company`, `company-chat`)
-│  ├─ tools.py         # the 26 graph tools (20 fraud reads/algorithms/writes + 6 company-brain)
+│  ├─ tools.py         # the 28 graph tools (22 fraud reads/algorithms/writes + 6 company-brain)
 │  ├─ memory.py        # episodic / semantic / procedural memory
 │  ├─ llm.py           # live (Groq / OpenAI-compatible) + offline fallback brains
 │  ├─ agent.py         # the investigation loop + system prompt
@@ -584,7 +611,7 @@ GraphSleuth/
 │  ├─ cli.py           # status / seed / demo / pipeline / bench / eval / memory / company / company-chat / serve / chat
 │  ├─ server.py        # zero-dependency web console (`serve`): live stream + growing graph
 │  ├─ web/             # the console's single-page app (plain HTML/CSS/JS, no CDN)
-│  └─ mcp_server.py    # the same 26 tools over MCP (stdio)
+│  └─ mcp_server.py    # the same 28 tools over MCP (stdio)
 ├─ tests/              # offline unit tests (no database needed)
 ├─ demos/              # demo script + saved reports
 ├─ docs/               # submission notes + why-graph comparison

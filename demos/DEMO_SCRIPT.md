@@ -54,16 +54,21 @@ Point at the live tool log as it streams:
 | 5 | `find_shared_links` | 9001/9002/9004 share devices; alerts on 9002 and 9004 |
 | 6 | `detect_suspicious_cluster` | union-find ranks the 6-member cluster top (score 41.05) |
 | 7 | `shortest_connection` | narrates the exact chain EXT → ... → ACC-9100 (6 hops) |
-| 8-11 | `open_case`, `add_case_note`, `flag_account`, `remember` | acts on the graph + writes memory |
+| 8-9 | `what_if_removed`, `assess_ring_resilience` | counterfactual + whole-ring resilience (read-only) |
+| 10-13 | `open_case`, `add_case_note`, `flag_account`, `remember` | acts on the graph + writes memory |
 
-Expected trail (all 11 calls `[ok]`, from `demos/EXAMPLE_REPORT.md`):
+Expected trail (all 13 calls `[ok]`, from `demos/EXAMPLE_REPORT.md`):
 
 ```
 [6] detect_suspicious_cluster(min_signals=2)
     -> clusters_found=1, clusters_filtered_out=4
 [7] shortest_connection(ACC-EXT-01 -> ACC-9100, via=[ORIGINATED, DESTINED])
     -> connected=True, hops=6
-[8-11] open_case, add_case_note, flag_account, remember
+[8] what_if_removed(DEV-9001, ACC-EXT-01 -> ACC-9100)
+    -> impact=minor, robustness=100/100 (verdict survives losing the device)
+[9] assess_ring_resilience(ring_key=top)
+    -> resilience=bottlenecked, articulation points: ACC-9001, ACC-9100
+[10-13] open_case, add_case_note, flag_account, remember
 ```
 
 Actions taken: opened `CASE-0002` (8 entities), added a case note, flagged `ACC-9003` as `high`

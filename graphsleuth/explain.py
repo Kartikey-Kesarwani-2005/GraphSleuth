@@ -132,6 +132,11 @@ def _facts_into(entry: dict, nodes: dict[str, str], edges: list[tuple[str, str, 
                 add_node(account, "Account")
 
     # --- Track 03 company-brain tools (org graph) ------------------------- #
+    elif tool == "assess_ring_resilience":
+        for row in result.get("members", []) or []:
+            entity = str(row.get("entity") or "")
+            add_node(entity, "Account")
+
     elif tool == "who_knows":
         system = str(result.get("system") or "")
         add_node(system, "System")

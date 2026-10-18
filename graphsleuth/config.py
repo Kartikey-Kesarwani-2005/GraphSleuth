@@ -39,7 +39,7 @@ class Config:
 
     llm_mode: str = _env("LLM_MODE", "auto").lower()  # auto | live | demo
     llm_reasoning_effort: str = _env("LLM_REASONING_EFFORT", "low")
-    max_tool_rounds: int = int(_env("MAX_TOOL_ROUNDS", "12") or 12)
+    max_tool_rounds: int = int(_env("MAX_TOOL_ROUNDS", "16") or 16)
 
     # ------------------------------------------------------------------ #
     # Which endpoint the live brain talks to (GROQ_API_KEY wins if set).

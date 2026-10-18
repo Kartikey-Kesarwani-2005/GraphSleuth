@@ -2,7 +2,7 @@
 
 Any MCP-capable client — Claude Desktop, an IDE agent, another agent in your
 team — can connect to this server and get the whole graph toolbelt: the same
-twenty-six tools the built-in agents use (20 fraud-investigation tools plus 6
+twenty-eight tools the built-in agents use (22 fraud-investigation tools plus 6
 company-brain tools for Track 03), backed by the same FalkorDB graph and the
 same memory. That is what makes the graph a *shared* context layer rather than
 one agent's private data.
@@ -118,6 +118,26 @@ def what_if_removed(
         from_id=from_id,
         to_id=to_id,
         max_depth=max_depth,
+    )
+
+
+@server.tool(description="Batch counterfactual: stress-test every member of the suspected ring, rank by load-bearing, and return the ring's resilience verdict (resilient / mostly_resilient / bottlenecked / fragile) with articulation points. Read-only.")
+def assess_ring_resilience(
+    ring_key: str = "top",
+    min_signals: int = 2,
+    top: int = 5,
+    depth: int = 2,
+    from_id: str = "ACC-EXT-01",
+    to_id: str = "ACC-9100",
+) -> str:
+    return _call(
+        "assess_ring_resilience",
+        ring_key=ring_key,
+        min_signals=min_signals,
+        top=top,
+        depth=depth,
+        from_id=from_id,
+        to_id=to_id,
     )
 
 
