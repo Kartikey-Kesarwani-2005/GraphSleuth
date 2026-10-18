@@ -141,6 +141,38 @@ def assess_ring_resilience(
     )
 
 
+@server.tool(description="Reconstruct when the suspected ring acted: timestamp-ordered transfers (in/out/internal), merchant spends and alerts, with first/last activity, value moved, busiest one-hour burst, member activation order and whether alerts led or followed the money. Read-only.")
+def ring_timeline(
+    ring_key: str = "top",
+    min_signals: int = 2,
+    top: int = 5,
+    limit: int = 30,
+) -> str:
+    return _call(
+        "ring_timeline",
+        ring_key=ring_key,
+        min_signals=min_signals,
+        top=top,
+        limit=limit,
+    )
+
+
+@server.tool(description="Pattern generalisation: fingerprint the suspected ring (size, collector shape, shared devices, alerts, risk) and rank every other candidate group by structural similarity, including money cross-links between them. Answers 'is this playbook running anywhere else / is it spreading'. Read-only.")
+def find_similar_rings(
+    ring_key: str = "top",
+    min_signals: int = 1,
+    top: int = 8,
+    limit: int = 3,
+) -> str:
+    return _call(
+        "find_similar_rings",
+        ring_key=ring_key,
+        min_signals=min_signals,
+        top=top,
+        limit=limit,
+    )
+
+
 @server.tool(description="Read-only Cypher escape hatch. Only MATCH/OPTIONAL MATCH/RETURN/WITH/CALL/UNWIND/SHOW/EXPLAIN.")
 def run_cypher(query: str, purpose: str = "") -> str:
     return _call("run_cypher", query=query, purpose=purpose)

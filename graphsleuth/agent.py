@@ -410,6 +410,17 @@ def build_demo_brain(target: str = "ACC-9003", handoff: bool = False) -> Scripte
             {"ring_key": "top"},
         ),
         (
+            # When did it actually happen? Timestamp-ordered story of the ring's
+            # activity, burst window and alert lead/lag (read-only).
+            "ring_timeline",
+            {"ring_key": "top"},
+        ),
+        (
+            # Is the playbook repeating anywhere else in the graph? (read-only).
+            "find_similar_rings",
+            {"ring_key": "top"},
+        ),
+        (
             "open_case",
             lambda history: {
                 "title": f"Mule ring around {target}",
@@ -544,11 +555,11 @@ def compose_final(question: str, history: list[dict]) -> str:
         lines.append(str(counter["conclusion"]))
 
     resilience = _last(history, "assess_ring_resilience") or {}
+    arts = resilience.get("articulation_points") or []
     if resilience.get("summary"):
         lines.append("")
         lines.append("**Ring resilience**")
         lines.append(str(resilience["summary"]))
-        arts = resilience.get("articulation_points") or []
         if arts:
             lines.append("")
             lines.append(
@@ -556,6 +567,27 @@ def compose_final(question: str, history: list[dict]) -> str:
                 + ", ".join(str(a) for a in arts)
                 + "; containing them first breaks the flow fastest."
             )
+
+    timeline = _last(history, "ring_timeline") or {}
+    if timeline.get("summary"):
+        lines.append("")
+        lines.append("**Timeline (reconstructed from graph timestamps)**")
+        lines.append(str(timeline["summary"]))
+        order = timeline.get("activation_order") or []
+        if order:
+            lines.append(
+                "- activation order: "
+                + " → ".join(
+                    f"{step['member']} ({str(step['first_touch'])[11:16]})"
+                    for step in order[:6]
+                )
+            )
+
+    similar = _last(history, "find_similar_rings") or {}
+    if similar.get("summary"):
+        lines.append("")
+        lines.append("**Pattern check — is this playbook running elsewhere?**")
+        lines.append(str(similar["summary"]))
 
     lines.append("")
     lines.append("**Members flagged by the clustering algorithm**")
@@ -595,9 +627,29 @@ def compose_final(question: str, history: list[dict]) -> str:
     lines.append("**Actions taken** — " + ("; ".join(actions) if actions else "none"))
 
     lines.append("")
-    lines.append(
-        "**Confidence** — high. Signals agree (shared devices + shared beneficiary + prior alerts + "
-        "same-day pass-through). Still missing: beneficial-owner confirmation for ACC-9100 and the "
-        "source of funds behind ACC-EXT-01."
-    )
+    # Self-consistency guard: the stated confidence can never exceed what the
+    # counterfactual + resilience numbers actually support. If the case is a single
+    # point of failure, say so instead of claiming "high".
+    robustness = counter.get("robustness")
+    resilience_verdict = str(resilience.get("verdict") or "")
+    if isinstance(robustness, (int, float)) and robustness <= 40:
+        lines.append(
+            "**Confidence** — medium, NOT high: the counterfactual shows the conclusion "
+            f"leans on a single link (robustness {robustness}/100). Corroborate before acting."
+        )
+    elif resilience_verdict in {"bottlenecked", "fragile"} and arts:
+        lines.append(
+            "**Confidence** — high on membership, conditional on structure: signals agree "
+            f"(shared devices + collector + alerts + same-day chain), but the ring is "
+            f"`{resilience_verdict}` (articulation: {', '.join(str(a) for a in arts)}). "
+            "Still missing: beneficial-owner confirmation for ACC-9100 and source of funds "
+            "behind ACC-EXT-01."
+        )
+    else:
+        lines.append(
+            "**Confidence** — high. Signals agree (shared devices + shared beneficiary + prior "
+            "alerts + same-day pass-through), the verdict survives the counterfactual "
+            f"(robustness {robustness if robustness is not None else 'n/a'}/100). Still missing: "
+            "beneficial-owner confirmation for ACC-9100 and the source of funds behind ACC-EXT-01."
+        )
     return "\n".join(lines)

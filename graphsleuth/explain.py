@@ -70,6 +70,10 @@ def _facts_into(entry: dict, nodes: dict[str, str], edges: list[tuple[str, str, 
         if node_id:
             nodes.setdefault(node_id, label or node_id.split("-")[0])
 
+    def add_edge(source: str, dest: str, kind: str = "") -> None:
+        if source and dest:
+            edges.append((source, dest, kind))
+
     tool, result = entry.get("tool"), entry.get("result")
     if not isinstance(result, dict):
         return
@@ -136,6 +140,26 @@ def _facts_into(entry: dict, nodes: dict[str, str], edges: list[tuple[str, str, 
         for row in result.get("members", []) or []:
             entity = str(row.get("entity") or "")
             add_node(entity, "Account")
+
+    elif tool == "ring_timeline":
+        for event in result.get("events", []) or []:
+            if event.get("kind") == "alert":
+                account = str(event.get("account") or "")
+                if account:
+                    add_node(account, "Account")
+                continue
+            source, dest = str(event.get("from") or ""), str(event.get("to") or "")
+            if source:
+                add_node(source, "Account")
+            if dest:
+                add_node(dest, "Merchant" if event.get("kind") == "merchant_spend" else "Account")
+            if source and dest:
+                add_edge(source, dest, "PAID" if event.get("kind") == "merchant_spend" else "TX")
+
+    elif tool == "find_similar_rings":
+        for candidate in result.get("candidates", []) or []:
+            for member in candidate.get("members", []) or []:
+                add_node(str(member), "Account")
 
     elif tool == "who_knows":
         system = str(result.get("system") or "")

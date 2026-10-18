@@ -34,6 +34,18 @@
 
       <div id="verdict" class="card verdict hidden"></div>
 
+      <div id="exports" class="card exports hidden">
+        <h2>Proof pack</h2>
+        <div class="exportrow">
+          <button id="copyverdict" type="button">Copy verdict</button>
+          <button id="downloadmd" type="button">Download report (.md)</button>
+          <button id="downloadproof" type="button">Download proof pack (.html)</button>
+        </div>
+        <p class="muted">Self-contained files: verdict, evidence trail, graph snapshot,
+          counterfactual numbers and reproducibility metadata. The proof pack prints to PDF
+          from any browser.</p>
+      </div>
+
       <div id="stress" class="card stress hidden">
         <h2>Counterfactual stress test <span id="stressverdict" class="pill"></span></h2>
         <div id="stressbody"></div>

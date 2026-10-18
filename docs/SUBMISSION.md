@@ -11,7 +11,7 @@ GraphSleuth is a graph-first agent system where FalkorDB is the context layer. A
 
 | Track | Implementation | Evidence |
 |---|---|---|
-| **01 — Agents that act on connected data** | Multi-hop reasoning, graph algorithms as tools, actions from evidence, explainable results. Tools: entity_search, graph_neighbors, trace_money_flow, find_shared_links, detect_suspicious_cluster, shortest_connection (money-only path via), page_rank, connected_components (WCC), community_detection (LPA), centrality (betweenness/harmonic), run_cypher (read-only), what_if_removed + assess_ring_resilience (counterfactual explainability: robustness 0-100, load-bearing score, articulation points), flag_account, open_case, add_case_note. | `demo` produces verdict + numbered evidence chain + Mermaid graph path + **counterfactual check + ring-resilience verdict (bottlenecked, articulation points named)** + verified actions. Native FalkorDB algos used with pinned reproducible configs (betweenness exact). |
+| **01 — Agents that act on connected data** | Multi-hop reasoning, graph algorithms as tools, actions from evidence, explainable results. Tools: entity_search, graph_neighbors, trace_money_flow, find_shared_links, detect_suspicious_cluster, shortest_connection (money-only path via), page_rank, connected_components (WCC), community_detection (LPA), centrality (betweenness/harmonic), run_cypher (read-only), what_if_removed + assess_ring_resilience (counterfactual explainability: robustness 0-100, load-bearing score, articulation points), ring_timeline (when: burst window, activation order, alerts-vs-money lead), find_similar_rings (is the playbook repeating: structural fingerprint + cross-links), flag_account, open_case, add_case_note. | `demo` produces verdict + numbered evidence chain + Mermaid graph path + **counterfactual check + ring-resilience verdict + timeline + pattern check + verified actions** + click-to-stress-test in the console + downloadable proof pack (standalone HTML). Native FalkorDB algos used with pinned reproducible configs (betweenness exact). |
 | **02 — Agent memory & coordination** | Episodic (Session+Message), semantic/procedural (MemoryNote), memory briefing before each turn, playbook distillation/reuse, handoffs (Handoff nodes) between Triage→Investigator→Verifier, per-tenant multigraph isolation, concurrency 0-errors, atomic IDs. | `memory` shows sessions/notes/cases/playbooks. `pipeline --verify` shows handoff accepted and adversarial verifier returns CONFIRMED/WEAK/REFUTED. Cross-session recall proven. |
 | **03 — Company brain** | Dedicated org graph (people/teams/projects/systems/docs/tickets/chats/decisions). Tools: who_knows, owners_of, blast_radius, decision_trail, knowledge_sources, stale_knowledge. Agentic (`company-chat`) + scripted tour (`company`) + web console mode. | Answers cite node IDs (EMP-*, DOC-*, TKT-*, ADR-*, SYS-*). Auto-seeded on demand. Deterministic dataset with dependency chain + source-traced decisions. |
 
@@ -45,7 +45,7 @@ python -m venv .venv
 
 # Console + MCP
 .\.venv\Scripts\python.exe -m graphsleuth serve  # http://127.0.0.1:8765
-python -m graphsleuth.mcp_server  # stdio, 28 tools
+python -m graphsleuth.mcp_server  # stdio, 30 tools
 ```
 
 ## Live runs (with GROQ_API_KEY)
@@ -55,7 +55,7 @@ python -m graphsleuth.mcp_server  # stdio, 28 tools
 ## Verification
 - **Offline tests:** `python tests/test_offline.py` → 27/27 PASS (no DB)
 - **Eval:** `python -m graphsleuth eval` → 11/11 (live FalkorDB)
-- **MCP:** 28 tools (22 fraud + 6 company), schemas match registry
+- **MCP:** 30 tools (24 fraud + 6 company), schemas match registry
 - **Isolation:** per-tenant multigraph proven
 - **Concurrency:** bench shows 0 errors
 - **Unicode-safe:** UTF-8 reconfigure on Windows

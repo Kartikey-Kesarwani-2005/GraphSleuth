@@ -1007,7 +1007,481 @@ def assess_ring_resilience(
     }
 
 
+def _cluster_profile(cluster: dict | None) -> dict:
+    """Structural fingerprint of one cluster: size, collector shape, shared devices,
+    alert count and mean risk — the features that separate a real ring from an
+    innocent device coincidence."""
+    members = list((cluster or {}).get("members") or [])
+    devices: set[str] = set()
+    beneficiaries: set[str] = set()
+    alerts = 0
+    collectors = 0
+    risks: list[float] = []
+    for member in members:
+        if member.get("role") == "shared_beneficiary" or member.get("shared_beneficiaries"):
+            collectors += 1
+        devices.update(str(d) for d in (member.get("shared_devices") or []))
+        beneficiaries.update(str(b) for b in (member.get("shared_beneficiaries") or []))
+        alerts += len(member.get("alerts") or [])
+        try:
+            risks.append(float(member.get("risk_score") or 0))
+        except (TypeError, ValueError):
+            continue
+    return {
+        "size": int((cluster or {}).get("size") or len(members)),
+        "members": sorted(str(m.get("account")) for m in members if m.get("account")),
+        "devices": sorted(devices),
+        "collectors": collectors,
+        "alerts": alerts,
+        "mean_risk": round(sum(risks) / len(risks), 3) if risks else 0.0,
+        "score": float((cluster or {}).get("cluster_score") or 0),
+    }
 
+
+def _profile_similarity(target: dict, other: dict) -> tuple[int, list[str]]:
+    """0-100 structural similarity between two cluster fingerprints, plus the features
+    that matched (so the agent can *explain* the comparison, not just score it)."""
+    reasons: list[str] = []
+
+    # size: how close are the group sizes?
+    biggest = max(target["size"], other["size"], 1)
+    size_sim = 1.0 - abs(target["size"] - other["size"]) / biggest
+    if size_sim >= 0.75:
+        reasons.append(f"similar size ({other['size']} vs {target['size']})")
+
+    # shape: does it funnel into a shared collector like ours does?
+    if target["collectors"] and other["collectors"]:
+        shape_sim = 1.0
+        reasons.append("also funnels into a shared collector")
+    elif not target["collectors"] and not other["collectors"]:
+        shape_sim = 0.6
+    else:
+        shape_sim = 0.2
+
+    # shared devices: the strong (hard-to-fake) link
+    union = set(target["devices"]) | set(other["devices"])
+    overlap = set(target["devices"]) & set(other["devices"])
+    device_sim = (len(overlap) / len(union)) if union else 0.5
+    if overlap:
+        reasons.append(f"shares devices {sorted(overlap)}")
+
+    # alert density: does it trip the same rules?
+    if target["alerts"] and other["alerts"]:
+        alert_sim = 1.0 - abs(target["alerts"] - other["alerts"]) / max(target["alerts"], other["alerts"])
+        if alert_sim >= 0.75:
+            reasons.append(f"similar alert load ({other['alerts']} vs {target['alerts']})")
+    elif not target["alerts"] and not other["alerts"]:
+        alert_sim = 0.6
+        reasons.append("no alerts on either side")
+    else:
+        alert_sim = 0.2
+
+    # risk: are the members equally suspicious on average?
+    risk_gap = abs(target["mean_risk"] - other["mean_risk"])
+    risk_sim = max(0.0, 1.0 - risk_gap / max(target["mean_risk"], other["mean_risk"], 0.1))
+    if risk_sim >= 0.85:
+        reasons.append(f"comparable mean risk ({other['mean_risk']} vs {target['mean_risk']})")
+
+    score = 100 * (0.25 * size_sim + 0.25 * shape_sim + 0.25 * device_sim + 0.15 * alert_sim + 0.10 * risk_sim)
+    return int(round(score)), reasons
+
+
+def find_similar_rings(
+    ring_key: str = "top",
+    min_signals: int = 1,
+    top: int = 8,
+    limit: int = 3,
+) -> dict:
+    """Pattern generalisation: "is this playbook running anywhere else in the graph?"
+
+    Detects every candidate group (loose threshold), fingerprints each one, and ranks
+    the *other* groups by structural similarity to the suspected ring — size, collector
+    shape, shared devices, alert load, risk. Also checks for money flowing between the
+    ring and each look-alike (cross-links). The verdict separates a genuine repeat of
+    the playbook from innocent coincidences (a bare shared device with no collector,
+    no alerts and low risk). Read-only.
+    """
+    min_signals = max(1, int(min_signals))
+    top = max(2, int(top))
+    limit = max(1, min(int(limit), 6))
+    ring_key = str(ring_key or "top").strip()
+
+    detected = _detect_cluster(min_signals, top)
+    clusters = list(detected.get("clusters") or [])
+    if not clusters:
+        return {
+            "found": False,
+            "note": "no candidate groups at this threshold — nothing to compare against",
+        }
+
+    if ring_key.isdigit():
+        index = min(int(ring_key), len(clusters)) - 1
+        target = clusters[max(0, index)]
+    elif ring_key != "top":
+        target = next(
+            (
+                c for c in clusters
+                if ring_key in {str(m.get("account")) for m in c.get("members", [])}
+            ),
+            clusters[0],
+        )
+    else:
+        target = clusters[0]
+
+    target_profile = _cluster_profile(target)
+    target_members = set(target_profile["members"])
+
+    # Money crossing between the ring and each look-alike (one query for all rows).
+    cross_rows: list = []
+    candidate_members: dict[str, set[str]] = {}
+    for cluster in clusters:
+        if cluster is target:
+            continue
+        for member in cluster.get("members", []):
+            account = str(member.get("account") or "")
+            if account:
+                candidate_members.setdefault(account, set()).add(str(id(cluster)))
+    if candidate_members:
+        cross_rows = db.query(
+            """
+            MATCH (x:Account)-[:ORIGINATED]->(t:Transaction)-[:DESTINED]->(y:Account)
+            WHERE (x.id IN $a AND y.id IN $b) OR (x.id IN $b AND y.id IN $a)
+            RETURN [x.id, y.id, t.id, t.timestamp, t.amount] AS row LIMIT 40
+            """,
+            {"a": sorted(target_members), "b": sorted(candidate_members)},
+        )
+
+    comparisons: list[dict] = []
+    for cluster in clusters:
+        if cluster is target:
+            continue
+        profile = _cluster_profile(cluster)
+        similarity, reasons = _profile_similarity(target_profile, profile)
+        cross = [
+            {
+                "from": str(row[0]),
+                "to": str(row[1]),
+                "tx": str(row[2]),
+                "timestamp": str(row[3] or ""),
+                "amount": float(row[4] or 0),
+            }
+            for row in cross_rows
+            if str(row[0]) in set(profile["members"]) or str(row[1]) in set(profile["members"])
+        ]
+        if cross:
+            reasons.append(f"{len(cross)} transfer(s) link the two groups directly")
+        comparisons.append(
+            {
+                "members": profile["members"],
+                "size": profile["size"],
+                "cluster_score": profile["score"],
+                "collectors": profile["collectors"],
+                "alerts": profile["alerts"],
+                "mean_risk": profile["mean_risk"],
+                "similarity": similarity,
+                "matches": reasons,
+                "cross_links": cross[:5],
+            }
+        )
+
+    comparisons.sort(key=lambda row: row["similarity"], reverse=True)
+    best = comparisons[:limit]
+    top_similarity = best[0]["similarity"] if best else 0
+    lookalikes = [row for row in best if row["similarity"] >= 60 and not row["cross_links"]]
+
+    if top_similarity >= 60 and any(row["cross_links"] for row in best):
+        verdict = "playbook_repeats_and_is_spreading"
+        verdict_text = (
+            "A structurally similar group exists AND money already flows between the two — "
+            "the playbook is repeating, not isolated."
+        )
+    elif top_similarity >= 60:
+        verdict = "playbook_repeats"
+        verdict_text = (
+            "A structurally similar group exists but shows no money link to this ring — "
+            "treat as a possible copycat / second cell and check it independently."
+        )
+    elif top_similarity >= 40:
+        verdict = "loose_resemblance_only"
+        verdict_text = (
+            "Look-alikes are superficial: they match on shape but lack the collector + alerts + "
+            "risk combination. Coincidence is more likely than a second cell."
+        )
+    else:
+        verdict = "unique_playbook"
+        verdict_text = (
+            "No other group in this graph shares the ring's fingerprint — the combination of "
+            "shared devices, a collector funnel and alerts is unique to this case."
+        )
+
+    summary = (
+        f"Compared the ring against {len(comparisons)} other candidate group(s): "
+        f"closest match {top_similarity}/100. Verdict: {verdict}. {verdict_text}"
+    )
+    return {
+        "found": True,
+        "target": {
+            "members": target_profile["members"],
+            "size": target_profile["size"],
+            "collectors": target_profile["collectors"],
+            "alerts": target_profile["alerts"],
+            "mean_risk": target_profile["mean_risk"],
+            "cluster_score": target_profile["score"],
+        },
+        "compared": len(comparisons),
+        "closest_similarity": top_similarity,
+        "lookalike_count": len(lookalikes),
+        "candidates": best,
+        "verdict": verdict,
+        "verdict_text": verdict_text,
+        "summary": summary,
+        "note": "read-only — similarity is structural (size/shape/devices/alerts/risk), "
+                "not a claim of shared ownership.",
+    }
+
+
+def ring_timeline(
+    ring_key: str = "top",
+    min_signals: int = 2,
+    top: int = 5,
+    limit: int = 30,
+) -> dict:
+    """When did the ring actually act? Reconstructs the minute-by-minute story from the
+    graph's own timestamps: every transfer touching the cluster (in, out and internal),
+    merchant spends and alerts, merged into one ordered event list.
+
+    Returns first/last activity, total value moved, the busiest burst window, per-member
+    first-touch order and whether alerts fired before or after the money moved. This is
+    the "narrative timeline" judges can verify against the raw rows. Read-only.
+    """
+    min_signals = max(1, int(min_signals))
+    top = max(1, int(top))
+    limit = max(5, min(int(limit), 60))
+    ring_key = str(ring_key or "top").strip()
+
+    detected = _detect_cluster(min_signals, top)
+    clusters = list(detected.get("clusters") or [])
+    if not clusters:
+        return {"found": False, "note": "no cluster at this threshold — no timeline to build"}
+
+    if ring_key.isdigit():
+        index = min(int(ring_key), len(clusters)) - 1
+        target = clusters[max(0, index)]
+    elif ring_key != "top":
+        target = next(
+            (
+                c for c in clusters
+                if ring_key in {str(m.get("account")) for m in c.get("members", [])}
+            ),
+            clusters[0],
+        )
+    else:
+        target = clusters[0]
+
+    members = sorted(
+        {str(m.get("account")) for m in target.get("members", []) if m.get("account")}
+    )
+    if not members:
+        return {"found": False, "note": "top cluster has no member accounts"}
+
+    # Every hop that touches a member: internal, inbound and outbound (one pass).
+    transfer_rows = db.query(
+        """
+        MATCH (a:Account)-[:ORIGINATED]->(t:Transaction)-[:DESTINED]->(b:Account)
+        WHERE a.id IN $m OR b.id IN $m
+        RETURN [t.id, a.id, b.id, t.timestamp, t.amount, t.channel] AS row
+        LIMIT $limit
+        """,
+        {"m": members, "limit": limit},
+    )
+    payment_rows = db.query(
+        """
+        MATCH (a:Account)-[:ORIGINATED]->(t:Transaction)-[:PAID]->(merch:Merchant)
+        WHERE a.id IN $m
+        RETURN [t.id, a.id, merch.id, t.timestamp, t.amount, t.category] AS row
+        LIMIT $limit
+        """,
+        {"m": members, "limit": limit},
+    )
+    alert_rows = db.query(
+        """
+        MATCH (a:Account)-[:FLAGGED_BY]->(al:Alert)
+        WHERE a.id IN $m
+        RETURN [al.id, a.id, al.created_at, al.severity, al.rule] AS row
+        LIMIT $limit
+        """,
+        {"m": members, "limit": limit},
+    )
+
+    events: list[dict] = []
+    total_value = 0.0
+    for row in transfer_rows:
+        tx_id, src, dst, ts, amount, channel = (list(row) + [None] * 6)[:6]
+        src, dst = str(src), str(dst)
+        direction = "internal" if (src in members and dst in members) else (
+            "inbound" if dst in members else "outbound"
+        )
+        value = float(amount or 0)
+        total_value += value
+        events.append(
+            {
+                "at": str(ts or ""),
+                "kind": "transfer",
+                "direction": direction,
+                "tx": str(tx_id),
+                "from": src,
+                "to": dst,
+                "amount": round(value, 2),
+                "channel": str(channel or ""),
+            }
+        )
+    for row in payment_rows:
+        tx_id, account, merchant, ts, amount, category = (list(row) + [None] * 6)[:6]
+        value = float(amount or 0)
+        total_value += value
+        events.append(
+            {
+                "at": str(ts or ""),
+                "kind": "merchant_spend",
+                "direction": "outbound",
+                "tx": str(tx_id),
+                "from": str(account),
+                "to": str(merchant),
+                "amount": round(value, 2),
+                "category": str(category or ""),
+            }
+        )
+    for row in alert_rows:
+        alert_id, account, created, severity, rule = (list(row) + [None] * 5)[:5]
+        events.append(
+            {
+                "at": str(created or ""),
+                "kind": "alert",
+                "direction": "detection",
+                "alert": str(alert_id),
+                "account": str(account),
+                "severity": str(severity or ""),
+                "rule": str(rule or ""),
+            }
+        )
+
+    events = [e for e in events if e.get("at")]
+    events.sort(key=lambda e: e["at"])
+    if not events:
+        return {
+            "found": False,
+            "note": "cluster members have no timestamped activity to reconstruct",
+            "members": members,
+        }
+
+    transfers = [e for e in events if e["kind"] == "transfer"]
+    alerts = [e for e in events if e["kind"] == "alert"]
+    first_at, last_at = events[0]["at"], events[-1]["at"]
+
+    # Burst detection: densest `window`-minute slice (default 60 minutes).
+    window_minutes = 60
+    burst = {"start": "", "end": "", "count": 0, "value": 0.0}
+    for start in range(len(events)):
+        window_value = 0.0
+        count = 0
+        start_ts = _iso_minutes(events[start]["at"])
+        if start_ts is None:
+            continue
+        for other in events[start:]:
+            other_ts = _iso_minutes(other["at"])
+            if other_ts is None or other_ts - start_ts > window_minutes:
+                break
+            count += 1
+            if other["kind"] == "transfer":
+                window_value += other.get("amount") or 0
+        if count > burst["count"]:
+            burst = {
+                "start": events[start]["at"],
+                "end": events[min(start + count, len(events)) - 1]["at"],
+                "count": count,
+                "value": round(window_value, 2),
+            }
+
+    # First touch per member (order the ring activated in).
+    first_touch: dict[str, str] = {}
+    for event in events:
+        if event["kind"] != "transfer":
+            continue
+        for side in (event["from"], event["to"]):
+            if side in members and side not in first_touch:
+                first_touch[side] = event["at"]
+    activation_order = [
+        {"member": member, "first_touch": first_touch[member]}
+        for member in sorted(first_touch, key=lambda m: first_touch[m])
+    ]
+
+    # Did detection lead or follow the money?
+    detection_lag = ""
+    if alerts and transfers:
+        first_alert = alerts[0]["at"]
+        first_tx = transfers[0]["at"]
+        if first_alert <= first_tx:
+            detection_lag = (
+                f"alerts fired BEFORE the first traced transfer ({first_alert} <= {first_tx}) — "
+                "detection led the money"
+            )
+        else:
+            lag_min = (_iso_minutes(first_alert) or 0) - (_iso_minutes(first_tx) or 0)
+            detection_lag = (
+                f"first alert {lag_min:.0f} minutes after the first traced transfer — "
+                "money moved before detection"
+            )
+
+    inbound = sum(1 for e in transfers if e["direction"] == "inbound")
+    internal = sum(1 for e in transfers if e["direction"] == "internal")
+    outbound = sum(1 for e in transfers if e["direction"] == "outbound")
+    spends = [e for e in events if e["kind"] == "merchant_spend"]
+
+    summary = (
+        f"Activity from {first_at} to {last_at}: {len(transfers)} transfer(s) moved "
+        f"INR {total_value:,.0f} ({inbound} in / {internal} internal / {outbound} out), "
+        f"{len(spends)} merchant spend(s), {len(alerts)} alert(s). "
+        + (
+            f"Burst: {burst['count']} events in one hour from {burst['start']} "
+            f"(INR {burst['value']:,.0f}). "
+            if burst["count"] >= 3
+            else ""
+        )
+        + (detection_lag[:1].upper() + detection_lag[1:] + "." if detection_lag else "")
+    )
+
+    return {
+        "found": True,
+        "members": members,
+        "window": {"first": first_at, "last": last_at},
+        "totals": {
+            "events": len(events),
+            "transfers": len(transfers),
+            "inbound": inbound,
+            "internal": internal,
+            "outbound": outbound,
+            "merchant_spends": len(spends),
+            "alerts": len(alerts),
+            "value_moved": round(total_value, 2),
+        },
+        "burst": burst,
+        "activation_order": activation_order,
+        "detection_lag": detection_lag,
+        "events": events[:limit],
+        "summary": summary,
+        "note": "read-only reconstruction from graph timestamps — nothing was written.",
+    }
+
+
+def _iso_minutes(stamp: str) -> float | None:
+    """Minutes since the epoch for an ISO-8601 string (best effort, None if unparseable)."""
+    try:
+        parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp() / 60.0
+    except (TypeError, ValueError):
+        return None
 
 
 def _reachable(start: str, skip: frozenset[str], depth: int = 3, budget: int = 300) -> set[str]:
@@ -1666,6 +2140,8 @@ HANDLERS: dict[str, Callable[..., dict]] = {
     "shortest_connection": shortest_connection,
     "what_if_removed": what_if_removed,
     "assess_ring_resilience": assess_ring_resilience,
+    "ring_timeline": ring_timeline,
+    "find_similar_rings": find_similar_rings,
     "page_rank": page_rank,
     "connected_components": connected_components,
     "community_detection": community_detection,
@@ -1804,6 +2280,36 @@ TOOL_SPECS: list[dict] = [
             "depth": {"type": "integer", "description": "reach depth for each probe, default 2, max 4"},
             "from_id": {"type": "string", "description": "chain start for the money-trail probe, default 'ACC-EXT-01'"},
             "to_id": {"type": "string", "description": "chain end for the money-trail probe, default 'ACC-9100'"},
+        },
+        [],
+    ),
+    _spec(
+        "ring_timeline",
+        "Reconstruct when the suspected ring actually acted: every transfer touching the "
+        "cluster (inbound/internal/outbound), merchant spends and alerts merged into one "
+        "timestamp-ordered event list. Returns first/last activity, value moved, the busiest "
+        "one-hour burst, per-member activation order and whether alerts led or followed the "
+        "money. Use for 'when did this happen' / 'build the sequence of events'. Read-only.",
+        {
+            "ring_key": {"type": "string", "description": "'top' (default) or a member account id"},
+            "min_signals": {"type": "integer", "description": "cluster sensitivity, default 2"},
+            "top": {"type": "integer", "description": "cluster selection size, default 5"},
+            "limit": {"type": "integer", "description": "max events, default 30, max 60"},
+        },
+        [],
+    ),
+    _spec(
+        "find_similar_rings",
+        "Pattern generalisation: is this playbook running anywhere else? Fingerprints the "
+        "suspected ring (size, collector shape, shared devices, alert load, mean risk) and "
+        "ranks every other candidate group by structural similarity, checking for money "
+        "flowing between them (cross-links). Separates a repeat cell from innocent device "
+        "coincidences. Use for 'are there more like this' / 'is this spreading'. Read-only.",
+        {
+            "ring_key": {"type": "string", "description": "'top' (default), a member id, or a 1-based cluster index"},
+            "min_signals": {"type": "integer", "description": "candidate threshold, default 1 (loose, to find look-alikes)"},
+            "top": {"type": "integer", "description": "candidate groups to consider, default 8"},
+            "limit": {"type": "integer", "description": "similar groups to return, default 3, max 6"},
         },
         [],
     ),

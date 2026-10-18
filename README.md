@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml/badge.svg)](https://github.com/Kartikey-Kesarwani-2005/GraphSleuth/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Tests](https://img.shields.io/badge/tests-30%20passing-brightgreen)
-![MCP](https://img.shields.io/badge/MCP-28%20tools-8A2BE2)
+![Tests](https://img.shields.io/badge/tests-32%20passing-brightgreen)
+![MCP](https://img.shields.io/badge/MCP-30%20tools-8A2BE2)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 **A fraud investigation agent whose context layer is FalkorDB.**
@@ -42,7 +42,7 @@ and it can prove every hop with the tool call that produced it.
   question ───▶ │  GraphSleuth agent loop                        │
                 │  memory briefing ─▶ LLM ─▶ tool call ─▶ result │
                 └───────────────────────┬────────────────────────┘
-                                        │ 28 tools
+                                        │ 30 tools
                     ┌───────────────────┴────────────────────┐
                     ▼                                        ▼
         read tools (reason over the graph)      write tools (act on the graph)
@@ -392,6 +392,8 @@ graph (mentally, read-only) and re-running the same analysis:
 |---|---|---|
 | `what_if_removed(entity, from, to)` | "If this device/account didn't exist, would the case still hold?" | Removing `DEV-9001` → `impact=minor, robustness=100/100` (the money trail and the ring both survive). Removing `ACC-9001` → `impact=critical, robustness=0/100` (every chain runs through it). |
 | `assess_ring_resilience(ring_key)` | "Where is this whole network actually vulnerable?" | `resilience=bottlenecked`: mean robustness 67/100, articulation points `ACC-9001, ACC-9100` — remove those and the case collapses. |
+| `ring_timeline(ring_key)` | "When did this actually happen?" | 19 timestamped events (10 transfers / INR 12.8M, 3 merchant spends, alerts), burst of 9 events in one hour from `2026-10-12T11:00`, activation order `ACC-9001 → … → ACC-9100` (11:00 → 11:35), and alerts fired **before** the first traced transfer — detection led the money. |
+| `find_similar_rings(ring_key)` | "Is this playbook running anywhere else?" | Compared against 4 other candidate groups: closest look-alike **19/100** → `unique_playbook` — the device-funnel-alert combination is unique to this case (innocent shared-device pairs score ~19, the real ring scores 100). |
 
 Both tools are **read-only** (the graph is never modified), reuse the *same* union-find/BFS
 implementations as the investigative tools (so the counterfactual can't drift from the analysis),
@@ -407,12 +409,25 @@ failure, and the final report prints a **Disruption guidance** line naming the b
 That is "explainable results" with a falsifiable claim attached — anyone can re-run the removal
 and check the numbers themselves.
 
+The same section of the report also answers *when* and *how many* — **Timeline** (burst window,
+member-by-member activation order, alerts-vs-money lead time) and **Pattern check** (structural
+fingerprint of the ring vs every other candidate group) — so the verdict is a story with a clock
+and a base rate, not just a list of links. The stated **Confidence** is generated *from* those
+numbers (a verdict that survives the counterfactual at robustness 100/100 says so; a
+single-point-of-failure verdict can never claim "high"), which makes the agent's self-report
+honest by construction.
+
 It is also **live and interactive in the web console**: click any node on the graph and the
 server runs the same read-only counterfactual against FalkorDB (`GET /api/stress`), the node is
 ghosted on the canvas with its edges drawn as severed red dashes, and a panel shows the impact
 badge, robustness `/100`, load-bearing score and the money trail *before → after*. A **Restore**
 button puts the graph back. Nothing is written — the whole demo is one click away from being
 reproduced by a judge.
+
+After any run the console offers a **Proof pack**: *Copy verdict*, *Download report (.md)* and
+*Download proof pack (.html)* — a single self-contained HTML file with the verdict, the numbered
+evidence trail, the **live canvas snapshot**, the counterfactual numbers and the reproducibility
+commands, printable to PDF straight from the browser. That is the artifact you hand a judge.
 
 ---
 
@@ -555,7 +570,7 @@ $ python -m graphsleuth demo --target ACC-9003 --save demos/EXAMPLE_REPORT.md
   [7] shortest_connection(ACC-EXT-01 -> ACC-9100, via=[ORIGINATED, DESTINED])
       -> connected=True, hops=6
   [8-11] open_case, add_case_note, flag_account, remember
-  all 13 tool calls [ok]
+  all 15 tool calls [ok]
 ```
 
 Selected output (copied from the report):
@@ -574,7 +589,7 @@ Selected output (copied from the report):
   **Actions taken (verified from the tool log)** section lists exactly these — from the trace.
 * **Cross-session memory:** running `demo` a second time, step 1's `recall` returns the first run's
   own conclusion — proof that state lives in the graph, not the process.
-* **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 28 tools and
+* **MCP:** a real MCP stdio client (`initialize` → `list_tools` → `call_tool`) sees all 30 tools and
   gets live graph data back (`tools: 26`; live `entity_search` + `detect_suspicious_cluster` calls).
 * **Tests:** `tests/test_offline.py` → 27/27 pass (no database required; includes an MCP/agent
   toolbelt parity check and company-brain tests); `compileall` clean. CI runs the suite and a real
@@ -607,7 +622,7 @@ GraphSleuth/
 │  ├─ db.py            # the only module that talks to FalkorDB (multigraph tenancy)
 │  ├─ seed.py          # synthetic fraud network + baseline memory
 │  ├─ company.py       # Track 03: company-brain graph, tour + agent (`company`, `company-chat`)
-│  ├─ tools.py         # the 28 graph tools (22 fraud reads/algorithms/writes + 6 company-brain)
+│  ├─ tools.py         # the 30 graph tools (24 fraud reads/algorithms/writes + 6 company-brain)
 │  ├─ memory.py        # episodic / semantic / procedural memory
 │  ├─ llm.py           # live (Groq / OpenAI-compatible) + offline fallback brains
 │  ├─ agent.py         # the investigation loop + system prompt
@@ -618,7 +633,7 @@ GraphSleuth/
 │  ├─ cli.py           # status / seed / demo / pipeline / bench / eval / memory / company / company-chat / serve / chat
 │  ├─ server.py        # zero-dependency web console (`serve`): live stream + growing graph
 │  ├─ web/             # the console's single-page app (plain HTML/CSS/JS, no CDN)
-│  └─ mcp_server.py    # the same 28 tools over MCP (stdio)
+│  └─ mcp_server.py    # the same 30 tools over MCP (stdio)
 ├─ tests/              # offline unit tests (no database needed)
 ├─ demos/              # demo script + saved reports
 ├─ docs/               # submission notes + why-graph comparison

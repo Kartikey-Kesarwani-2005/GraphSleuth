@@ -16,9 +16,9 @@ from graphsleuth.agent import compose_final  # noqa: E402
 
 
 def test_tool_specs_are_openai_shaped() -> None:
-    assert len(tools.TOOL_SPECS) == 22  # the fraud-investigation toolbelt
+    assert len(tools.TOOL_SPECS) == 24  # the fraud-investigation toolbelt
     assert len(tools.COMPANY_TOOL_SPECS) == 6  # Track 03 company-brain tools
-    assert len(tools.ALL_TOOL_SPECS) == 28  # everything the agents/MCP can call
+    assert len(tools.ALL_TOOL_SPECS) == 30  # everything the agents/MCP can call
     for spec in tools.ALL_TOOL_SPECS:
         function = spec["function"]
         assert spec["type"] == "function"
@@ -96,6 +96,33 @@ def test_ring_resilience_tool_is_registered_and_read_only() -> None:
         inspect.signature(getattr(mcp_server, "assess_ring_resilience")).parameters
     )
     assert mcp_params == params  # MCP clients see the exact same tool
+
+
+def test_timeline_and_pattern_tools_are_registered_and_read_only() -> None:
+    """Two questions judges always ask: *when* did this happen, and *is it happening
+    elsewhere*? `ring_timeline` answers the first from the graph's own timestamps and
+    `find_similar_rings` the second via structural fingerprints. Both must be in every
+    toolbelt (handler + spec + MCP), read-only, and signature-exact."""
+    import inspect
+
+    for name in ("ring_timeline", "find_similar_rings"):
+        assert name in tools.HANDLERS
+        assert name in {s["function"]["name"] for s in tools.ALL_TOOL_SPECS}
+        assert name not in tools.MUTATING_TOOLS
+
+        spec = next(s for s in tools.ALL_TOOL_SPECS if s["function"]["name"] == name)
+        params = set(spec["function"]["parameters"]["properties"])
+        sig = set(inspect.signature(getattr(tools, name)).parameters)
+        assert sig == params, f"{name}: signature/spec drift"
+
+    # pure helpers stay importable and side-effect free
+    assert tools._iso_minutes("2026-10-12T11:14:00+00:00") is not None
+    assert tools._iso_minutes("not-a-date") is None
+    similarity, reasons = tools._profile_similarity(
+        {"size": 6, "devices": ["D1", "D2"], "collectors": 1, "alerts": 3, "mean_risk": 0.5, "score": 40, "members": []},
+        {"size": 6, "devices": ["D1"], "collectors": 1, "alerts": 3, "mean_risk": 0.5, "score": 12, "members": []},
+    )
+    assert 0 <= similarity <= 100 and similarity >= 60 and reasons
 
 
 def test_multigraph_one_graph_per_tenant() -> None:
@@ -676,6 +703,27 @@ def test_console_click_to_stress_test_is_wired() -> None:
     assert "/api/stress" in js and "runStressTest" in js
     assert "stress.entity" in js           # the canvas ghosts the removed node
     assert ".stress-critical" in css       # impact badge styling ships too
+
+
+def test_proof_pack_export_is_wired() -> None:
+    """The judge-facing artifact: after a run the console must offer *Copy verdict*,
+    *Download report (.md)* and *Download proof pack (.html)* — a standalone HTML with the
+    verdict, evidence trail, canvas snapshot and reproducibility commands. No server round
+    trip, no CDN: it must work offline in the browser."""
+    from graphsleuth import server
+
+    html = (server.WEB_DIR / "index.html").read_text(encoding="utf-8")
+    js = (server.WEB_DIR / "app.js").read_text(encoding="utf-8")
+    css = (server.WEB_DIR / "app.css").read_text(encoding="utf-8")
+
+    for element in ('id="exports"', 'id="copyverdict"', 'id="downloadmd"', 'id="downloadproof"'):
+        assert element in html
+
+    for marker in ("buildProofPack", "buildMarkdown", "downloadFile", "toDataURL"):
+        assert marker in js
+    assert "Reproduce" in js and "python -m graphsleuth eval" in js  # provenance is embedded
+    assert "canvas.toDataURL" in js  # the graph snapshot travels with the pack
+    assert ".exports" in css  # and it is styled like the rest of the console
 
 
 if __name__ == "__main__":

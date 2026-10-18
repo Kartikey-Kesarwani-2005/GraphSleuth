@@ -1,8 +1,8 @@
 # GraphSleuth investigation report
 
 - **Question:** Investigate ACC-9003 — is this account part of a fraud ring?
-- **Session:** SES-5f73aecc   **Tenant:** default
-- **Brain:** offline-scripted   **Rounds:** 14
+- **Session:** SES-aed9a460   **Tenant:** default
+- **Brain:** offline-scripted   **Rounds:** 16
 
 ## Verdict
 
@@ -28,6 +28,13 @@ Removing DEV-9001 (minor): the money trail ACC-EXT-01 -> ACC-9100 still runs wit
 **Ring resilience**
 Ring of 6 member(s) is mostly_resilient: mean robustness 76/100, mean load-bearing 0.242. No single member is load-bearing — the ring survives losing any one of them.
 
+**Timeline (reconstructed from graph timestamps)**
+Activity from 2026-09-15T09:00:00+00:00 to 2026-10-12T12:03:00+00:00: 10 transfer(s) moved INR 12,785,000 (1 in / 9 internal / 0 out), 3 merchant spend(s), 3 alert(s). Burst: 9 events in one hour from 2026-10-12T11:00:00+00:00 (INR 11,650,000). Alerts fired BEFORE the first traced transfer (2026-09-15T09:00:00+00:00 <= 2026-10-12T11:00:00+00:00) — detection led the money.
+- activation order: ACC-9001 (11:00) → ACC-9002 (11:07) → ACC-9003 (11:14) → ACC-9004 (11:21) → ACC-9005 (11:28) → ACC-9100 (11:35)
+
+**Pattern check — is this playbook running elsewhere?**
+Compared the ring against 4 other candidate group(s): closest match 19/100. Verdict: unique_playbook. No other group in this graph shares the ring's fingerprint — the combination of shared devices, a collector funnel and alerts is unique to this case.
+
 **Members flagged by the clustering algorithm**
 - ACC-9002 | risk 0.81 | devices ['DEV-9001', 'DEV-9002'] | beneficiaries ['ACC-9004', 'ACC-9100'] | alerts ['high']
 - ACC-9004 | risk 0.85 | devices ['DEV-9002'] | beneficiaries ['ACC-9005', 'ACC-9100'] | alerts ['medium']
@@ -36,11 +43,11 @@ Ring of 6 member(s) is mostly_resilient: mean robustness 76/100, mean load-beari
 - ACC-9001 | risk 0.72 | devices ['DEV-9001'] | beneficiaries ['ACC-9005'] | alerts ['high']
 - ACC-9005 | risk 0.9 | devices ['DEV-9002'] | beneficiaries ['ACC-9100'] | alerts []
 
-**Tools & queries used** — recall, entity_search, graph_neighbors, trace_money_flow, find_shared_links, detect_suspicious_cluster, shortest_connection, what_if_removed, assess_ring_resilience, open_case, add_case_note, flag_account, remember
+**Tools & queries used** — recall, entity_search, graph_neighbors, trace_money_flow, find_shared_links, detect_suspicious_cluster, shortest_connection, what_if_removed, assess_ring_resilience, ring_timeline, find_similar_rings, open_case, add_case_note, flag_account, remember
 
-**Actions taken** — opened CASE-0002 involving ACC-9002, ACC-9004, ACC-9003, ACC-9100, ACC-9001, ACC-9005, DEV-9001, DEV-9002; added evidence note NOTE-3b8950 to CASE-0002; flagged ACC-9003 as high (AL-6a6020), status under_review; wrote memory MEM-61ace9c7 linked to ['ACC-9002', 'ACC-9004', 'ACC-9003', 'ACC-9100', 'ACC-9001', 'ACC-9005']
+**Actions taken** — opened CASE-0002 involving ACC-9002, ACC-9004, ACC-9003, ACC-9100, ACC-9001, ACC-9005, DEV-9001, DEV-9002; added evidence note NOTE-6481c0 to CASE-0002; flagged ACC-9003 as high (AL-6a4fa4), status under_review; wrote memory MEM-343061e6 linked to ['ACC-9002', 'ACC-9004', 'ACC-9003', 'ACC-9100', 'ACC-9001', 'ACC-9005']
 
-**Confidence** — high. Signals agree (shared devices + shared beneficiary + prior alerts + same-day pass-through). Still missing: beneficial-owner confirmation for ACC-9100 and the source of funds behind ACC-EXT-01.
+**Confidence** — high. Signals agree (shared devices + shared beneficiary + prior alerts + same-day pass-through), the verdict survives the counterfactual (robustness 100/100). Still missing: beneficial-owner confirmation for ACC-9100 and the source of funds behind ACC-EXT-01.
 
 ## Actions taken (verified from the tool log)
 
@@ -79,18 +86,24 @@ Ring of 6 member(s) is mostly_resilient: mean robustness 76/100, mean load-beari
  9. assess_ring_resilience  [ok]
     args: {'ring_key': 'top'}
     found_ring: True | ring: 6 items | cluster_size_before: 6 | cluster_score_before: 41.05 | endpoints: {from: ACC-EXT-01, to: ACC-9100} | members: 6 items | articulation_points: 0 items | resilience: mostly_resilient | mean_robustness: 76 | mean_load_bearing_score: 0.242 | summary: Ring of 6 member(s) is mostly_resilient: mean robustness 76/100, mean load-beari | note: read-only batch counterfactual
-10. open_case  [ok]
+10. ring_timeline  [ok]
+    args: {'ring_key': 'top'}
+    found: True | members: 6 items | window: {first: 2026-09-15T09:00:00+00:00, last: 2026-10-12T12:03:00+00:00} | totals: {events: 16, transfers: 10, inbound: 1, internal: 9} | burst: {start: 2026-10-12T11:00:00+00:00, end: 2026-10-12T11:56:00+00:00, count: 9, value: 11650000.0} | activation_order: 6 items | detection_lag: alerts fired BEFORE the first traced transfer (2026-09-15T09:00:00+00:00 <= 20
+11. find_similar_rings  [ok]
+    args: {'ring_key': 'top'}
+    found: True | target: {members: 6, size: 6, collectors: 6, alerts: 3} | compared: 4 | closest_similarity: 19 | lookalike_count: 0 | candidates: 3 items | verdict: unique_playbook | verdict_text: No other group in this graph shares the ring's fingerprint — the combination of  | summary: Compared the ring against 4 other candidate group(s): closest match 19/100. Verd | note: read-only — similarity i
+12. open_case  [ok]
     args: {'title': 'Mule ring around ACC-9003', 'summary': '6-account cluster (ACC-9002, ACC-9004, ACC-9003, ACC-9100, ACC-9001, ACC-9005), score 41.05', 'entity_ids': ['ACC-9002', 'ACC-9004', 'ACC-9003', 'ACC-9100', 'ACC-9001', 'ACC-9005', 'DEV-9001', 'DEV-9002']}
     case_id: CASE-0002 | title: Mule ring around ACC-9003 | involves: 8 items | status: open
-11. add_case_note  [ok]
+13. add_case_note  [ok]
     args: {'case_id': 'CASE-0002', 'text': 'Evidence: 6-account cluster (ACC-9002, ACC-9004, ACC-9003, ACC-9100, ACC-9001, ACC-9005), score 41.05. Money chain traced from ACC-EXT-01 to ACC-9100 via the shared devices DEV-9001/DEV-9002; prior alerts on ACC-9001, ACC-9002 and ACC-9004.'}
-    case_id: CASE-0002 | note_id: NOTE-3b8950 | saved: True
-12. flag_account  [ok]
+    case_id: CASE-0002 | note_id: NOTE-6481c0 | saved: True
+14. flag_account  [ok]
     args: {'account_id': 'ACC-9003', 'severity': 'high', 'reason': 'Shares device DEV-9001/DEV-9002 with flagged accounts, is a pass-through hop in a same-day chain ending at ACC-9100, and sits in the top-ranked cluster.', 'case_id': 'CASE-0002'}
-    flagged: True | account: ACC-9003 | alert_id: AL-6a6020 | severity: high | case: CASE-0002 | status: under_review
-13. remember  [ok]
+    flagged: True | account: ACC-9003 | alert_id: AL-6a4fa4 | severity: high | case: CASE-0002 | status: under_review
+15. remember  [ok]
     args: {'kind': 'episodic', 'text': 'Investigated ACC-9003: 6-account cluster (ACC-9002, ACC-9004, ACC-9003, ACC-9100, ACC-9001, ACC-9005), score 41.05. Confirmed same-day mule chain ACC-EXT-01 -> ACC-9001 -> ... -> ACC-9005 -> ACC-9100 through shared devices DEV-9001/DEV-9002; account flagged and case opened.', 'about_ids': ['ACC-9002', 'ACC-9004', 'ACC-9003', 'ACC-9100', 'ACC-9001', 'ACC-9005']}
-    note_id: MEM-61ace9c7 | kind: episodic | linked_to: 6 items | text: Investigated ACC-9003: 6-account cluster (ACC-9002, ACC-9004, ACC-9003, ACC-9100
+    note_id: MEM-343061e6 | kind: episodic | linked_to: 6 items | text: Investigated ACC-9003: 6-account cluster (ACC-9002, ACC-9004, ACC-9003, ACC-9100
 ```
 
 ## Path through the graph
@@ -116,6 +129,14 @@ graph LR
     nTX_9000["TX-9000<br/><i>TX</i>"]
     nTX_9001["TX-9001<br/><i>TX</i>"]
     nTX_9008["TX-9008<br/><i>TX</i>"]
+    nM_05["M-05<br/><i>Merchant</i>"]
+    nM_09["M-09<br/><i>Merchant</i>"]
+    nACC_0012["ACC-0012<br/><i>Account</i>"]
+    nACC_0013["ACC-0013<br/><i>Account</i>"]
+    nACC_0120["ACC-0120<br/><i>Account</i>"]
+    nACC_0121["ACC-0121<br/><i>Account</i>"]
+    nACC_0044["ACC-0044<br/><i>Account</i>"]
+    nACC_0045["ACC-0045<br/><i>Account</i>"]
     nACC_9003 -->|INVOLVES| nCASE_0001
     nACC_9003 -->|ORIGINATED| nTX_M90003
     nACC_9003 -->|DESTINED| nTX_9002
@@ -164,4 +185,16 @@ graph LR
     nMEM_2026_10_10_AL9001 -->|ABOUT| nDEV_9001
     nACC_9001 -->|USED_DEVICE| nDEV_9001
     nACC_9002 -->|USED_DEVICE| nDEV_9001
+    nACC_9003 -->|PAID| nM_03
+    nACC_9004 -->|PAID| nM_05
+    nACC_9005 -->|PAID| nM_09
+    nACC_EXT_01 -->|TX| nACC_9001
+    nACC_9001 -->|TX| nACC_9002
+    nACC_9002 -->|TX| nACC_9003
+    nACC_9003 -->|TX| nACC_9004
+    nACC_9004 -->|TX| nACC_9005
+    nACC_9005 -->|TX| nACC_9100
+    nACC_9002 -->|TX| nACC_9004
+    nACC_9001 -->|TX| nACC_9005
+    nACC_9002 -->|TX| nACC_9100
 ```

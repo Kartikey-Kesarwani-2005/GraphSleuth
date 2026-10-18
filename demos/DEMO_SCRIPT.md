@@ -55,9 +55,10 @@ Point at the live tool log as it streams:
 | 6 | `detect_suspicious_cluster` | union-find ranks the 6-member cluster top (score 41.05) |
 | 7 | `shortest_connection` | narrates the exact chain EXT → ... → ACC-9100 (6 hops) |
 | 8-9 | `what_if_removed`, `assess_ring_resilience` | counterfactual + whole-ring resilience (read-only) |
-| 10-13 | `open_case`, `add_case_note`, `flag_account`, `remember` | acts on the graph + writes memory |
+| 10-11 | `ring_timeline`, `find_similar_rings` | when it happened (burst + activation order) + is the playbook repeating elsewhere (read-only) |
+| 12-15 | `open_case`, `add_case_note`, `flag_account`, `remember` | acts on the graph + writes memory |
 
-Expected trail (all 13 calls `[ok]`, from `demos/EXAMPLE_REPORT.md`):
+Expected trail (all 15 calls `[ok]`, from `demos/EXAMPLE_REPORT.md`):
 
 ```
 [6] detect_suspicious_cluster(min_signals=2)
@@ -68,7 +69,11 @@ Expected trail (all 13 calls `[ok]`, from `demos/EXAMPLE_REPORT.md`):
     -> impact=minor, robustness=100/100 (verdict survives losing the device)
 [9] assess_ring_resilience(ring_key=top)
     -> resilience=bottlenecked, articulation points: ACC-9001, ACC-9100
-[10-13] open_case, add_case_note, flag_account, remember
+[10] ring_timeline(ring_key=top)
+    -> 19 events, burst 9/hour, activation order 11:00 -> 11:35, alerts led the money
+[11] find_similar_rings(ring_key=top)
+    -> closest look-alike 19/100, verdict unique_playbook (no copycat cell)
+[12-15] open_case, add_case_note, flag_account, remember
 ```
 
 Actions taken: opened `CASE-0002` (8 entities), added a case note, flagged `ACC-9003` as `high`

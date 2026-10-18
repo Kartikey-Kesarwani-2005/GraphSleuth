@@ -210,6 +210,24 @@ button.ghost {
 }
 button.ghost:hover { color: var(--text); border-color: var(--accent); }
 
+/* ------------------------------------------------------------------ *
+ * proof pack export row
+ * ------------------------------------------------------------------ */
+.exports { border-left: 3px solid var(--accent); }
+.exports .exportrow { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 8px; }
+.exports .exportrow button {
+  background: linear-gradient(180deg, #233052, #1b2642);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 9px;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.exports .exportrow button:hover { border-color: var(--accent); color: #fff; }
+.exports p { margin: 0; font-size: 12.5px; }
+
 @media (max-width: 900px) {
   main { grid-template-columns: 1fr; height: auto; }
   .right { height: 60vh; }
