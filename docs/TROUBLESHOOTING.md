@@ -10,6 +10,14 @@ If the Company mode dropdown or free-text question doesn't appear after updating
 
 Server already sends `Cache-Control: no-cache, no-store, must-revalidate`, `Pragma: no-cache`, `Expires: 0` for HTML/CSS/JS.
 
+## Web console is reachable from other machines
+- It is not supposed to be: `serve` binds `127.0.0.1` and has **no authentication** —
+  any caller can read and write any tenant graph (the tenant comes from the request).
+- If you saw the "NO authentication" warning, you (or a `Dockerfile`/compose override)
+  bound a routable interface. Go back to loopback, or front it with a proxy that
+  authenticates. `docker compose --profile app up -d` publishes the port on
+  `127.0.0.1` only.
+
 ## Windows Unicode errors
 If CLI crashes on LLM output with `UnicodeEncodeError`:
 - GraphSleuth configures UTF-8 on stdout/stderr at startup (`cli.py`). Also prefer using PowerShell/Windows Terminal.

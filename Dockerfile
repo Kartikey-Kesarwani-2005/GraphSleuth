@@ -28,4 +28,10 @@ EXPOSE 8765
 
 # Default: the live web console. Override the command to run anything else, e.g.
 #   docker compose --profile app run --rm app python -m graphsleuth eval
+#
+# 0.0.0.0 is the interface *inside* the container, which the console needs to be
+# reachable through a port mapping at all; the console itself is loopback-only by
+# default and has no authentication. docker-compose publishes it as
+# 127.0.0.1:8765 on the host — keep that loopback front unless something in front
+# of it authenticates callers.
 CMD ["python", "-m", "graphsleuth", "serve", "--host", "0.0.0.0", "--port", "8765"]

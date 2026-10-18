@@ -25,5 +25,9 @@ services:
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       LLM_MODE: ${LLM_MODE:-auto}
     ports:
-      - "8765:8765"
+      # Loopback only on the host. The console has NO authentication and every
+      # endpoint can write to the graph, so publishing it on 0.0.0.0 would hand
+      # any machine on the network read/write access to every tenant graph.
+      # Change to "8765:8765" only behind a proxy that authenticates.
+      - "127.0.0.1:8765:8765"
     restart: unless-stopped

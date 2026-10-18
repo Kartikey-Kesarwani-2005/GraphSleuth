@@ -323,6 +323,13 @@ they are discovered, and shows the verdict, the graph-verified write actions and
 memory. Switch the tenant in the UI and the whole view is a different graph on the same FalkorDB
 instance. Uncheck "live model" to run the deterministic offline brain.
 
+> **No authentication — it is a local demo surface, not a deployable service.** The console binds
+> `127.0.0.1` and every endpoint can *write* to the graph; the tenant is chosen by the caller
+> (`?tenant=` / request body). Anyone who can reach the port can read and write **any** tenant
+> graph. Keep it on loopback, or put it behind a proxy that authenticates. `--host 0.0.0.0` (as the
+> Docker image does *inside* the container) prints a warning, and `docker compose --profile app`
+> publishes the port on `127.0.0.1` only.
+
 ---
 
 ## Multigraph tenancy (one graph per tenant)
