@@ -40,20 +40,26 @@ Working rules:
 5. To look past a single account use `detect_suspicious_cluster` (union-find over shared
    devices, corroborated by shared beneficiaries and prior alerts).
 6. Prove relationships with `shortest_connection` so the path can be shown.
-7. For whole-graph structure use the graph algorithms: `centrality` (which node bridges every
+7. Before you escalate — and before you claim **high** confidence — stress-test the conclusion:
+   `what_if_removed` on the decisive device or edge (does the verdict survive losing it?) and
+   `assess_ring_resilience` on the top cluster (which members are load-bearing?). If you did not
+   run them, your confidence is at most **medium** and you must say the counterfactual is missing.
+   `ring_timeline` (when did it happen?) and `find_similar_rings` (is the playbook repeating
+   elsewhere?) are cheap read-only checks worth running on a confirmed ring.
+8. For whole-graph structure use the graph algorithms: `centrality` (which node bridges every
    path), `page_rank` (structural hubs), `connected_components` (isolated islands),
    `community_detection` (who clusters with whom).
-8. `run_cypher` is the read-only escape hatch when no other tool fits.
-9. Two or more of {shared device, shared beneficiary, prior alert} on the same account is a
-   strong mule-ring signal and justifies escalation.
-10. Act when the evidence supports it: `open_case`, `add_case_note`, `flag_account` (quote the
+9. `run_cypher` is the read-only escape hatch when no other tool fits.
+10. Two or more of {shared device, shared beneficiary, prior alert} on the same account is a
+    strong mule-ring signal and justifies escalation.
+11. Act when the evidence supports it: `open_case`, `add_case_note`, `flag_account` (quote the
     signals in the reason). These are real graph writes — they persist for other agents.
-11. If a handoff is waiting (`list_handoffs`), call `accept_handoff` first and continue the
+12. If a handoff is waiting (`list_handoffs`), call `accept_handoff` first and continue the
     previous agent's work instead of starting from scratch.
-12. If you are the triage agent: triage quickly (`list_alerts`, `find_shared_links`,
+13. If you are the triage agent: triage quickly (`list_alerts`, `find_shared_links`,
     `detect_suspicious_cluster`), then either `create_handoff(to_role='investigator', ...)`
     with the full context, or close it out as non-escalation.
-13. Finish by calling `remember` with what you concluded, linked to the entities involved, so
+14. Finish by calling `remember` with what you concluded, linked to the entities involved, so
     the next session starts smarter than this one did.
 
 Final answer format (always, in this order):
@@ -64,7 +70,9 @@ Final answer format (always, in this order):
 - **Actions taken** — the write tools you really called this session (`open_case`,
   `add_case_note`, `flag_account`, `create_handoff`, `accept_handoff`, `remember`) with their ids.
   If you only read, write exactly: `None — read-only investigation.`
-- **Confidence** — high/medium/low, plus what evidence is still missing.
+- **Confidence** — high/medium/low, plus what evidence is still missing. "high" requires the
+  counterfactual stress test from rule 7 to have run in this session; without it, say what is
+  missing and answer at most "medium".
 """
 
 
@@ -324,6 +332,19 @@ class GraphSleuth:
                 }
             )
 
+        # The same discipline for confidence: the prompt asks for the counterfactual
+        # stress test before a "high" claim, but a small model forgets — so the claim is
+        # checked against the trace and corrected when the evidence does not support it.
+        corrected = _downgrade_confidence(answer, self.history)
+        if corrected:
+            answer = corrected + (
+                "\n\n> ⚠ **Confidence downgraded** — the answer claimed high confidence, but no "
+                "counterfactual stress test (`what_if_removed` / `assess_ring_resilience`) ran in "
+                "this session, so how much the conclusion leans on a single link is unknown."
+            )
+            self._log("  [!] confidence downgraded — no counterfactual ran this session")
+            self._emit({"type": "confidence_downgraded", "reason": "no counterfactual"})
+
         memory.append_message(self.session_id, "assistant", answer, self.tenant)
         memory.set_session_summary(self.session_id, answer[:600])
         self._learn_playbook(question, complete=not truncated)
@@ -450,6 +471,39 @@ def _evidence_seen(history: list[dict]) -> bool:
         or _flow_hops(_last(history, "trace_money_flow") or {})
         or path
         or neighbours
+    )
+
+
+def _counterfactual_ran(history: list[dict]) -> bool:
+    """Did a counterfactual stress test actually run (and produce numbers)?
+
+    `what_if_removed` reports a robustness score; `assess_ring_resilience` reports a
+    ring verdict. An errored call counts as "did not run".
+    """
+    counter = _last(history, "what_if_removed") or {}
+    resilience = _last(history, "assess_ring_resilience") or {}
+    return counter.get("robustness") is not None or bool(resilience.get("found_ring"))
+
+
+def _downgrade_confidence(answer: str, history: list[dict]) -> str | None:
+    """Return `answer` with an unsupported "high" confidence claim corrected, or None.
+
+    Prompt rules drift — a small live model will assert "confidence high, nothing
+    missing" without ever running the counterfactual stress test. The claim is
+    deterministic, so it is checked deterministically: if the answer says high and
+    no counterfactual ran, the line is rewritten to medium (the rest of the line is
+    kept verbatim) and the caller appends the reason.
+    """
+    if _counterfactual_ran(history):
+        return None
+    match = re.search(
+        r"(\*\*Confidence\*\*\s*[—:-]\s*)(?:\*\*)?high(?:\*\*)?(?!\w)", answer, re.IGNORECASE
+    )
+    if not match:
+        return None
+    return (
+        f"{answer[: match.start()]}{match.group(1)}"
+        f"medium (downgraded — no counterfactual ran){answer[match.end():]}"
     )
 
 

@@ -233,6 +233,31 @@ def test_verified_actions_ignore_failed_calls() -> None:
     assert "flag_account" in actions[0]
 
 
+def test_confidence_downgraded_without_counterfactual() -> None:
+    """A live model's "high" claim is corrected when no counterfactual ran.
+
+    The prompt asks for `what_if_removed` / `assess_ring_resilience` before claiming
+    high confidence; the answer is checked against the trace so the rule cannot be
+    ignored silently.
+    """
+    from graphsleuth.agent import _downgrade_confidence
+
+    history = [{"tool": "entity_search", "arguments": {}, "result": {"matches": [{"id": "ACC-9003"}]}}]
+    answer = "**Verdict** — escalated.\n\n**Confidence** — high. Nothing else is missing."
+    corrected = _downgrade_confidence(answer, history)
+    assert corrected is not None
+    assert "medium (downgraded" in corrected
+    assert "**Confidence** — high" not in corrected
+    # A trace that actually ran the stress test keeps the claim, and so does an
+    # answer that never claimed "high".
+    with_counterfactual = history + [
+        {"tool": "what_if_removed", "arguments": {}, "result": {"robustness": 100}}
+    ]
+    assert _downgrade_confidence(answer, with_counterfactual) is None
+    assert _downgrade_confidence("**Confidence** — low: thin evidence.", history) is None
+    assert _downgrade_confidence("**Confidence** — medium, not high: no cf.", history) is None
+
+
 def test_compose_final_uses_real_results() -> None:
     history = [
         {"tool": "recall", "arguments": {}, "result": {"notes": [{"kind": "episodic", "text": "prior finding"}]}},
