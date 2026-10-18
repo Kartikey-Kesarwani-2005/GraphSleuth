@@ -19,6 +19,13 @@ If CLI crashes on LLM output with `UnicodeEncodeError`:
 - Check: `python -m graphsleuth status`
 - Start: `docker compose up -d` (FalkorDB on localhost:6379)
 - If port in use: change `FALKORDB_PORT` or stop other Redis/FalkorDB.
+- Every command except `status` checks the connection first and exits with this hint
+  instead of a traceback — so an unreachable database never looks like a bug in the agent.
+
+## "Graph ... is empty"
+- `demo` and `pipeline` refuse to run on an unseeded graph (otherwise the agent
+  investigates nothing and still reports a verdict). Seed it:
+  `python -m graphsleuth seed` — or `--tenant <name>` for a non-default tenant.
 
 ## LLM quota/fallback
 - With `GROQ_API_KEY` set, it tries `openai/gpt-oss-120b` → `openai/gpt-oss-20b` → `qwen/qwen3.8-27b` automatically.
