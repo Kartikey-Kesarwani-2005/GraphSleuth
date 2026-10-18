@@ -341,7 +341,7 @@ def run_pipeline(
         role="investigator",
         brain=investigator_brain,
         scripted=build_demo_brain(target, handoff=True),
-        max_rounds=16,  # handoff pickup + the full investigation
+        max_rounds=19,  # 17 scripted steps (handoff pickup + investigation) + the verdict round
         model=model,
     )
     investigation_result = investigator.ask(INVESTIGATE_QUESTION.format(target=target))

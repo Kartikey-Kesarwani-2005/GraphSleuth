@@ -126,14 +126,21 @@ class GraphSleuth:
         except Exception:  # noqa: BLE001 - listeners are best-effort telemetry
             pass
 
-    def _learn_playbook(self, question: str) -> None:
+    def _learn_playbook(self, question: str, complete: bool = True) -> None:
         """Distil this investigation into procedural memory (a reusable playbook).
 
         Only substantial investigations teach: a 1-2 tool lookup is not a
         procedure. Identical tool sequences are de-duplicated, and the tenant
         keeps at most `memory.save_playbook` playbooks, so memory stays useful
         instead of becoming a log.
+
+        A run the round budget cut short teaches nothing: distilling a truncated
+        schedule would file an incomplete procedure as if it had produced the
+        verdict.
         """
+        if not complete:
+            self._log("  [memory] no playbook learned — the run hit its round budget")
+            return
         try:
             playbook = memory.distill_playbook(self.history, question, self.tenant)
             if not playbook or memory.playbook_exists(playbook["signature"], self.tenant):
@@ -214,12 +221,14 @@ class GraphSleuth:
         answer: str | None = None
         rounds = 0
         seen_calls: set[str] = set()
+        forced_verdict = False
 
         while rounds < self.max_rounds:
             rounds += 1
             # The final round is reserved for the verdict so the agent can never
             # run out of budget mid-investigation.
             force_answer = rounds >= self.max_rounds
+            forced_verdict = force_answer
             response = brain.chat(
                 messages, self.tool_specs, history=self.history, force_answer=force_answer
             )
@@ -283,9 +292,38 @@ class GraphSleuth:
                 "The graph did not yield enough evidence for a verdict."
             )
 
+        # Was the plan cut short? A scripted brain knows how much of the plan never
+        # ran; a live brain can only be judged by "the verdict round was forced".
+        # Either way the reader is told, in the answer itself, so the caveat travels
+        # with the report, the console and the saved evidence file.
+        remaining = getattr(brain, "remaining_steps", None)
+        truncated = forced_verdict if remaining is None else remaining > 0
+        if truncated:
+            if remaining:
+                note = (
+                    f"{remaining} planned tool call(s) did not run, so any write actions among "
+                    "them (case note, flag, memory) never happened."
+                )
+            else:
+                note = "the answer was produced on the final round, so the investigation may be incomplete."
+            answer += (
+                f"\n\n> ⚠ **Round budget reached** (`MAX_TOOL_ROUNDS={self.max_rounds}`, "
+                f"{rounds} rounds used): {note} Re-run with a larger `MAX_TOOL_ROUNDS` "
+                "for a complete plan."
+            )
+            self._log(f"  [!] round budget reached after {rounds} rounds — {note}")
+            self._emit(
+                {
+                    "type": "truncated",
+                    "rounds": rounds,
+                    "max_rounds": self.max_rounds,
+                    "remaining_steps": remaining,
+                }
+            )
+
         memory.append_message(self.session_id, "assistant", answer, self.tenant)
         memory.set_session_summary(self.session_id, answer[:600])
-        self._learn_playbook(question)
+        self._learn_playbook(question, complete=not truncated)
 
         result = {
             "question": question,
@@ -295,6 +333,8 @@ class GraphSleuth:
             "tenant": self.tenant,
             "role": self.role,
             "rounds": rounds,
+            "truncated": truncated,
+            "max_rounds": self.max_rounds,
             "brain": "live" if getattr(brain, "provider", None) else "offline-scripted",
             "provider": getattr(brain, "provider", "offline fallback"),
         }

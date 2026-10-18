@@ -573,7 +573,9 @@ $ python -m graphsleuth demo --target ACC-9003 --save demos/EXAMPLE_REPORT.md
       -> clusters_found=1, clusters_filtered_out=4
   [7] shortest_connection(ACC-EXT-01 -> ACC-9100, via=[ORIGINATED, DESTINED])
       -> connected=True, hops=6
-  [8-11] open_case, add_case_note, flag_account, remember
+  [8-11] what_if_removed, assess_ring_resilience, ring_timeline, find_similar_rings
+      -> device removal impact / ring articulation points / burst window / look-alike rings
+  [12-15] open_case, add_case_note, flag_account, remember
   all 15 tool calls [ok]
 ```
 

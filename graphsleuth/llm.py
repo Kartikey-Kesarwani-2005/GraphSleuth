@@ -212,6 +212,16 @@ class ScriptedBrain:
         self._preamble = preamble
         self._step = 0
 
+    @property
+    def remaining_steps(self) -> int:
+        """Planned tool calls that have not run yet.
+
+        The agent loop reads this to tell a *complete* plan that happened to end
+        on the forced verdict round (0 left) apart from one the round budget
+        actually cut short (>0 left).
+        """
+        return len(self._queue)
+
     def chat(
         self,
         messages: list[dict],

@@ -71,7 +71,9 @@ Before answering, the agent calls `recall()` (memory briefing). After finishing,
 2. **Think**: LLM receives system prompt + memory + tool specs (24 fraud or 6 company + shared).
 3. **Act**: LLM selects tools via function/tool calling; each call streamed as `tool_call` event.
 4. **Observe**: Tool executes against FalkorDB (graph reads/writes), returns structured result; streamed as `tool_result` + appended to trace.
-5. **Reason**: Iterate up to `max_rounds` (12–15) until it can produce a confident answer with evidence.
+5. **Reason**: Iterate up to `max_rounds` (default `MAX_TOOL_ROUNDS=20`; the pipeline allocates 8 triage /
+   19 investigator / 10 verifier, where the last round is always reserved for the verdict). If the
+   budget cuts the plan short, the answer says so — a truncated run never reads like a complete one.
 6. **Conclude**: Compose Answer/Evidence/Graph path/Actions; write episodic/semantic/procedural memory; emit `done`.
 7. **Explain**: `explain.py` builds evidence chain, graph facts (nodes/edges) for visualization, and verified actions.
 
