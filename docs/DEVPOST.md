@@ -10,7 +10,7 @@ Paste-ready text for https://devpost.com (Team **NexAI**, code **NZ4NTP**).
 FalkorDB graph, so it follows connections, remembers across sessions, and can show the exact path
 behind every answer.**
 
-> **Demo Video:** [Add Loom/YouTube unlisted link here](https://www.loom.com/share/your-demo-link) *(replace with actual video before submitting)*
+> **Demo Video:** [Watch the 90-second demo](https://youtu.be/VZfI9LZwR2o)
 
 ---
 

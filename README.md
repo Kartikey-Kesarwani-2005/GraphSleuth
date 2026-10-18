@@ -6,7 +6,7 @@
 ![MCP](https://img.shields.io/badge/MCP-30%20tools-8A2BE2)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> **Demo Video:** [Add Loom/YouTube unlisted link here](https://www.loom.com/share/your-demo-link) *(replace with actual video link)*
+> **Demo Video:** [Watch the 90-second demo](https://youtu.be/VZfI9LZwR2o)
 
 **A fraud investigation agent whose context layer is FalkorDB.**
 
